@@ -1,1 +1,1 @@
-feat: Phase 3 - LangGraph multi-agent system, Sage supervisor, signal pipeline, agents dashboard
+feat: Phase 4 - isometric trading floor visualization, agent desks, Bull vs Bear debate, real-time speech bubbles
