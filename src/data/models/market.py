@@ -1,4 +1,5 @@
 """OHLCV ORM model — TimescaleDB hypertable partitioned by ts."""
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
@@ -6,6 +7,35 @@ from sqlalchemy import BigInteger, DateTime, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.data.models.base import Base, TimestampMixin
+
+
+@dataclass
+class OHLCVBar:
+    """Lightweight dataclass used by backtesting engine and strategies."""
+
+    symbol: str
+    exchange: str
+    timeframe: str
+    ts: datetime
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: Decimal
+
+    @classmethod
+    def from_orm(cls, row: "OHLCV") -> "OHLCVBar":
+        return cls(
+            symbol=row.symbol,
+            exchange=row.exchange,
+            timeframe=row.timeframe,
+            ts=row.ts,
+            open=row.open,
+            high=row.high,
+            low=row.low,
+            close=row.close,
+            volume=row.volume,
+        )
 
 
 class OHLCV(Base, TimestampMixin):
