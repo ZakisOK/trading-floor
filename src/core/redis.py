@@ -10,7 +10,7 @@ _redis_client: aioredis.Redis | None = None
 def get_redis() -> aioredis.Redis:
     global _redis_client
     if _redis_client is None:
-        _redis_client = aioredis.from_url(
+        _redis_client = aioredis.from_url(  # type: ignore[no-untyped-call]
             settings.redis_url,
             encoding="utf-8",
             decode_responses=True,
@@ -21,7 +21,8 @@ def get_redis() -> aioredis.Redis:
 async def produce(stream: str, fields: dict[str, Any], maxlen: int = 10_000) -> str:
     """Append a message to a Redis Stream. Returns the message ID."""
     client = get_redis()
-    msg_id: str = await client.xadd(stream, fields, maxlen=maxlen, approximate=True)
+    # redis-py StreamCommands expects Mapping[field, value] — str values satisfy this
+    msg_id: str = await client.xadd(stream, fields, maxlen=maxlen, approximate=True)  # type: ignore[arg-type]
     return msg_id
 
 

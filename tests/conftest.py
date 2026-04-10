@@ -1,22 +1,34 @@
 """Pytest configuration and shared fixtures."""
-import pytest
-from httpx import AsyncClient, ASGITransport
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.api.main import app
-from src.core.config import Settings
+from src.core.config import settings
+from src.data.models.base import Base
+
+TEST_DB_URL = settings.database_url.replace("/tradingfloor", "/tradingfloor_test")
 
 
-@pytest.fixture(scope="session")
-def test_settings() -> Settings:
-    """Override settings for the test environment."""
-    return Settings(
-        environment="test",
-        database_url="postgresql+asyncpg://tradingfloor:tradingfloor_dev@localhost:5432/tradingfloor_test",
-        redis_url="redis://localhost:6379/1",
-    )
+@pytest_asyncio.fixture(scope="session")
+async def engine():  # type: ignore[misc]
+    e = create_async_engine(TEST_DB_URL, echo=False)
+    async with e.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield e
+    async with e.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    await e.dispose()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
+async def session(engine):  # type: ignore[misc]
+    async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with async_session() as s:
+        yield s
+
+
+@pytest_asyncio.fixture
 async def client() -> AsyncClient:
     """Async HTTP client wired directly to the FastAPI app (no network)."""
     async with AsyncClient(

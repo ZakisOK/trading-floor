@@ -1,13 +1,14 @@
 """Broker abstraction stub."""
 from abc import ABC, abstractmethod
-from src.data.schemas.market import OHLCVSchema
 
 
 class BaseBroker(ABC):
     """Unified interface over CCXT, Alpaca, and NautilusTrader."""
 
     @abstractmethod
-    async def place_order(self, symbol: str, side: str, qty: float, order_type: str) -> dict[str, object]: ...
+    async def place_order(
+        self, symbol: str, side: str, qty: float, order_type: str
+    ) -> dict[str, object]: ...
 
     @abstractmethod
     async def cancel_order(self, order_id: str) -> bool: ...
