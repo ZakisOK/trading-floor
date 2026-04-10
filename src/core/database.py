@@ -4,6 +4,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from src.core.config import settings
 
+# Import all models so Base.metadata is populated everywhere this module is imported
+from src.data.models import (  # noqa: F401
+    OHLCV,
+    AgentMessage,
+    AgentState,
+    AuditLog,
+    Base,
+    Position,
+    Signal,
+    Trade,
+)
+
 engine = create_async_engine(
     settings.database_url,
     echo=settings.environment == "development",

@@ -10,7 +10,7 @@ from alembic import context
 from src.core.config import settings
 from src.data.models.base import Base
 # Import all models so Alembic can detect them
-from src.data.models import market, portfolio, audit  # noqa: F401
+from src.data.models import market, portfolio, agent, audit  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)
