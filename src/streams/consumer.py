@@ -1,40 +1,74 @@
-"""Redis Streams consumer base class stub."""
+"""Redis Streams base consumer with auto-ack and error handling."""
+import asyncio
+import contextlib
 from abc import ABC, abstractmethod
 from typing import Any
 
-import redis.asyncio as aioredis
+import structlog
+from redis.asyncio import Redis
 
-from src.core.redis import get_redis, ensure_consumer_group
+logger = structlog.get_logger()
 
 
 class BaseConsumer(ABC):
-    """Base class for all Redis Streams consumers."""
+    """Base class for all Redis Streams consumers.
 
-    stream: str
-    group: str
-    consumer_name: str
+    Subclasses implement `handle(msg_id, fields)` to process each message.
+    Consumer groups are created automatically if they do not exist.
+    Messages are acknowledged after successful handle() calls.
+    """
 
-    def __init__(self, consumer_name: str) -> None:
+    def __init__(
+        self,
+        stream: str,
+        group: str,
+        consumer_name: str,
+        redis: Redis,
+    ) -> None:
+        self.stream = stream
+        self.group = group
         self.consumer_name = consumer_name
+        self.redis = redis
+        self._running = False
 
     async def start(self) -> None:
-        await ensure_consumer_group(self.stream, self.group)
-        await self._consume_loop()
+        """Start the consumer loop. Blocks until stop() is called."""
+        self._running = True
+        with contextlib.suppress(Exception):
+            await self.redis.xgroup_create(self.stream, self.group, id="0", mkstream=True)
 
-    async def _consume_loop(self) -> None:
-        client = get_redis()
-        while True:
-            results: list[Any] = await client.xreadgroup(
-                groupname=self.group,
-                consumername=self.consumer_name,
-                streams={self.stream: ">"},
-                count=10,
-                block=1000,
-            )
-            for _stream, messages in results:
-                for msg_id, fields in messages:
-                    await self.handle(msg_id, fields)
-                    await client.xack(self.stream, self.group, msg_id)
+        while self._running:
+            try:
+                messages: list[Any] = await self.redis.xreadgroup(
+                    self.group,
+                    self.consumer_name,
+                    {self.stream: ">"},
+                    count=10,
+                    block=1000,
+                )
+                for _stream_name, msgs in messages or []:
+                    for msg_id, fields in msgs:
+                        try:
+                            await self.handle(msg_id, fields)
+                            await self.redis.xack(self.stream, self.group, msg_id)
+                        except Exception as e:
+                            logger.error(
+                                "consumer_handle_error",
+                                stream=self.stream,
+                                msg_id=msg_id,
+                                error=str(e),
+                            )
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("consumer_loop_error", stream=self.stream, error=str(e))
+                await asyncio.sleep(1)
+
+    async def stop(self) -> None:
+        """Signal the consumer loop to stop."""
+        self._running = False
 
     @abstractmethod
-    async def handle(self, msg_id: str, fields: dict[str, Any]) -> None: ...
+    async def handle(self, msg_id: str, fields: dict[str, Any]) -> None:
+        """Process a single message. Raise to prevent acknowledgement."""
+        ...
