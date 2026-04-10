@@ -1,1 +1,1 @@
-feat: Phase 6 - paper trading broker, execution monitor, kill switch, order approval workflow
+feat: Phase 7 - mission control dashboard, full navigation, morning briefing API
