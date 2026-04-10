@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-void: #0A0D13;
+  --bg-base: #0F1219;
+  --bg-surface-1: #171B24;
+  --bg-surface-2: #1F2430;
+  --bg-surface-3: #292E38;
+  --bg-hover: #313742;
+  --text-primary: #EEEFF1;
+  --text-secondary: rgba(238, 239, 241, 0.65);
+  --text-tertiary: rgba(238, 239, 241, 0.4);
+  --text-disabled: rgba(238, 239, 241, 0.25);
+  --border-subtle: rgba(255, 255, 255, 0.05);
+  --border-default: rgba(255, 255, 255, 0.08);
+  --border-emphasis: rgba(255, 255, 255, 0.12);
+  --border-top-highlight: rgba(255, 255, 255, 0.1);
+  --status-critical: #FF3838;
+  --status-serious: #FFB302;
+  --status-caution: #FCE83A;
+  --status-normal: #56F000;
+  --status-standby: #2DCCFF;
+  --status-off: #A4ABB6;
+  --accent-primary: #5E6AD2;
+  --accent-cyan: #2DCCFF;
+  --accent-profit: #58D68D;
+  --accent-loss: #F85149;
+  --font-sans: 'Geist', -apple-system, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px;
+  --space-4: 16px; --space-6: 24px; --space-8: 32px;
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 12px; --radius-xl: 16px;
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.5), 0 2px 4px rgba(0,0,0,0.4);
+  --shadow-2: 0 2px 4px rgba(0,0,0,0.4), 0 8px 16px rgba(0,0,0,0.3);
+  --shadow-3: 0 4px 8px rgba(0,0,0,0.35), 0 16px 32px rgba(0,0,0,0.25);
+  --glass-bg: rgba(255, 255, 255, 0.03);
+}
+
+body {
+  background: var(--bg-void);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+}
+
+.glass-panel {
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-top-color: rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.03) inset, 0 8px 32px rgba(0,0,0,0.4);
+}
