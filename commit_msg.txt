@@ -1,1 +1,1 @@
-feat: Phase 7 - mission control dashboard, full navigation, morning briefing API
+feat: Phase 8 - paper trading scheduler, Scout opportunity scanner, morning briefing, final integration

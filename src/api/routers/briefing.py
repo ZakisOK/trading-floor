@@ -59,3 +59,40 @@ async def get_briefing() -> dict:
             "summary": f"Briefing unavailable: {str(e)}",
             "key_risks": [], "opportunities": [], "recommendation": "Check system status",
         }
+
+
+@router.get("/opportunities")
+async def get_opportunities() -> dict:
+    """Run Scout overnight scan and return top-ranked proposals."""
+    try:
+        from src.agents.scout import ScoutAgent
+        from src.core.database import get_session
+        from src.data.repositories.ohlcv_repo import OHLCVRepository
+        from datetime import timedelta
+
+        SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"]
+        scout = ScoutAgent()
+        bars_by_symbol: dict = {}
+
+        async for session in get_session():
+            repo = OHLCVRepository(session)
+            end = datetime.now(UTC)
+            start = end - timedelta(days=30)
+            for sym in SYMBOLS:
+                bars = await repo.get_bars(sym, "binance", "1h", start, end, limit=720)
+                if bars:
+                    bars_by_symbol[sym] = bars
+
+        proposals = await scout.scan_opportunities(SYMBOLS, bars_by_symbol)
+        return {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "symbols_scanned": len(SYMBOLS),
+            "proposals": proposals,
+        }
+    except Exception as e:
+        return {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "symbols_scanned": 0,
+            "proposals": [],
+            "error": str(e),
+        }
