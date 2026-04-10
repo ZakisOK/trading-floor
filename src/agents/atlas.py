@@ -1,5 +1,6 @@
 """Atlas — Execution Agent stub."""
 from typing import Any
+
 from src.agents.base import BaseAgent
 
 

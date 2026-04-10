@@ -1,10 +1,14 @@
+import asyncio
+import contextlib
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
+from src.api.routers.market import router as market_router
+from src.api.ws.handler import broadcast_loop, websocket_endpoint
 from src.core.config import settings
 from src.core.redis import ensure_consumer_group
 from src.streams.topology import CONSUMER_GROUPS
@@ -36,7 +40,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await ensure_consumer_group(stream, group_name)
     logger.info("redis_streams_bootstrapped", groups=len(CONSUMER_GROUPS))
 
+    # Start WebSocket broadcast background task
+    broadcast_task = asyncio.create_task(broadcast_loop())
+    logger.info("broadcast_loop_started")
+
     yield
+
+    broadcast_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await broadcast_task
 
     logger.info("shutting_down")
 
@@ -55,7 +67,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(market_router)
+
 
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "mode": settings.autonomy_mode}
+
+
+@app.websocket("/ws")
+async def ws_route(websocket: WebSocket) -> None:
+    await websocket_endpoint(websocket)

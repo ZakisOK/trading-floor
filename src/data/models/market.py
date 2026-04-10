@@ -1,4 +1,5 @@
 """OHLCV ORM model — TimescaleDB hypertable partitioned by ts."""
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import BigInteger, DateTime, Numeric, String, UniqueConstraint
@@ -23,7 +24,7 @@ class OHLCV(Base, TimestampMixin):
     symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     exchange: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     timeframe: Mapped[str] = mapped_column(String(10), nullable=False)
-    ts: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     open: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     high: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     low: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)

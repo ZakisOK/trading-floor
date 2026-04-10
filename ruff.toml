@@ -3,7 +3,9 @@ target-version = "py311"
 
 [lint]
 select = ["E", "F", "I", "N", "UP", "ANN", "B", "SIM"]
-ignore = ["ANN101", "ANN102"]
+# ANN101/102 removed in newer ruff. B008: FastAPI Depends() is idiomatic in default args.
+# ANN401: Any is required for untyped third-party libraries (ccxt.pro, alpaca-py).
+ignore = ["B008", "ANN401"]
 
 [lint.per-file-ignores]
 "tests/*" = ["ANN"]

@@ -1,5 +1,6 @@
 """Sage — Portfolio Manager (LangGraph supervisor) stub."""
 from typing import Any
+
 from src.agents.base import BaseAgent
 
 
