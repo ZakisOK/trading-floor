@@ -1,1 +1,1 @@
-feat: Phase 5 - risk engine, position tracking, risk dashboard, operating mode selector
+feat: Phase 6 - paper trading broker, execution monitor, kill switch, order approval workflow
