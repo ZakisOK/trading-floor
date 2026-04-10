@@ -1,1 +1,1 @@
-feat: Phase 4 - isometric trading floor visualization, agent desks, Bull vs Bear debate, real-time speech bubbles
+feat: Phase 5 - risk engine, position tracking, risk dashboard, operating mode selector
