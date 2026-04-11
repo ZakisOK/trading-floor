@@ -60,6 +60,10 @@ class BacktestResult:
     start_time: datetime
     end_time: datetime
     bars_processed: int
+    # Memorization risk assessment — set by BacktestValidator after the run
+    memorization_risk: str = "UNKNOWN"
+    # Validity flags — adjusted Sharpe, warnings, labels
+    validity_flags: dict = field(default_factory=dict)
 
 
 class BacktestEngine:
@@ -169,7 +173,7 @@ class BacktestEngine:
             self.config.initial_equity,
             years,
         )
-        return BacktestResult(
+        result = BacktestResult(
             config=self.config,
             trades=self._trades,
             equity_curve=self._equity_curve,
@@ -178,3 +182,26 @@ class BacktestEngine:
             end_time=bars[-1].ts,
             bars_processed=len(bars),
         )
+
+        # --- Memorization risk assessment ---
+        # Run after the backtest so we can annotate the result in-place.
+        # This does NOT change the backtest outcome — it flags the result for consumers.
+        from src.backtesting.validation import BacktestValidator
+        validator = BacktestValidator()
+        risk = validator.check_memorization_risk(
+            symbol=self.config.symbol,
+            start_date=start_time,
+            end_date=bars[-1].ts,
+        )
+        result.memorization_risk = risk["risk_level"]
+        result.validity_flags = validator.validate_backtest_result(result, risk["risk_level"])
+
+        if risk["risk_level"] != "LOW":
+            logger.warning(
+                "backtest_memorization_risk",
+                symbol=self.config.symbol,
+                risk_level=risk["risk_level"],
+                reason=risk["reason"][:120],
+            )
+
+        return result

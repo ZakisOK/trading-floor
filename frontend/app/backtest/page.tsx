@@ -3,6 +3,39 @@ import { useState, useEffect, useRef } from "react";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+interface WindowResult {
+  window_index: number;
+  in_sample_sharpe: number;
+  out_of_sample_sharpe: number;
+  in_sample_bars: number;
+  out_of_sample_bars: number;
+  in_sample_trades: number;
+  out_of_sample_trades: number;
+  in_sample_start?: string;
+  out_of_sample_end?: string;
+}
+
+interface WalkForwardResult {
+  symbol: string;
+  strategy_name: string;
+  n_windows: number;
+  in_sample_sharpe: number;
+  out_of_sample_sharpe: number;
+  degradation_ratio: number;
+  window_results: WindowResult[];
+  is_robust: boolean;
+  total_bars: number;
+}
+
+interface ValidityFlags {
+  risk_level: string;
+  is_trustworthy: boolean;
+  sharpe_confidence_penalty_pct: number;
+  adjusted_sharpe: number;
+  warnings: string[];
+  labels: string[];
+}
+
 interface BacktestResult {
   job_id: string;
   status: string;
@@ -19,7 +52,11 @@ interface BacktestResult {
   equity_curve?: number[];
   trades?: Array<{ pnl: number; pnl_pct: number; entry: string; exit: string; reason: string }>;
   error?: string;
+  memorization_risk?: string;
+  validity_flags?: ValidityFlags;
+  walk_forward?: WalkForwardResult;
 }
+
 
 function fmt(n: number | undefined, dec = 2): string {
   if (n === undefined || n === null) return "—";
@@ -33,6 +70,111 @@ function MetricCard({ label, value, suffix = "", color }: { label: string; value
       <div style={{ color: "var(--text-tertiary)", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>{label}</div>
       <div style={{ fontFamily: "var(--font-mono)", fontSize: "22px", fontVariantNumeric: "tabular-nums", color: color ?? "var(--text-primary)", fontWeight: 600 }}>
         {value}<span style={{ fontSize: "13px", color: "var(--text-secondary)", marginLeft: 2 }}>{suffix}</span>
+      </div>
+    </div>
+  );
+}
+
+function MemorizationRiskBadge({ risk, flags }: { risk: string; flags?: ValidityFlags }) {
+  const colors: Record<string, { bg: string; border: string; text: string; dot: string }> = {
+    HIGH:    { bg: "rgba(248,81,73,0.12)",  border: "rgba(248,81,73,0.4)",  text: "#f85149", dot: "#f85149" },
+    MEDIUM:  { bg: "rgba(210,153,34,0.12)", border: "rgba(210,153,34,0.4)", text: "#d9a428", dot: "#d9a428" },
+    LOW:     { bg: "rgba(63,185,80,0.12)",  border: "rgba(63,185,80,0.4)",  text: "#3fb950", dot: "#3fb950" },
+    UNKNOWN: { bg: "rgba(139,148,158,0.12)",border: "rgba(139,148,158,0.3)",text: "#8b949e", dot: "#8b949e" },
+  };
+  const c = colors[risk] ?? colors.UNKNOWN;
+  const label = risk === "UNKNOWN" ? "Assessing..." : `${risk} memorization risk`;
+  const adjSharpe = flags?.adjusted_sharpe;
+  const penalty = flags?.sharpe_confidence_penalty_pct ?? 0;
+
+  return (
+    <div style={{ background: c.bg, border: `1px solid ${c.border}`, borderRadius: "var(--radius-md)", padding: "14px 18px", marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: flags?.warnings?.length ? 10 : 0 }}>
+        <span style={{ width: 8, height: 8, borderRadius: "50%", background: c.dot, flexShrink: 0, display: "inline-block" }} />
+        <span style={{ color: c.text, fontWeight: 700, fontSize: 13, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+          {label}
+        </span>
+        {penalty > 0 && (
+          <span style={{ marginLeft: "auto", color: "var(--text-secondary)", fontSize: 12, fontFamily: "var(--font-mono)" }}>
+            Adj. Sharpe: {fmt(adjSharpe)} <span style={{ opacity: 0.6 }}>(-{penalty}% confidence)</span>
+          </span>
+        )}
+      </div>
+      {flags?.warnings?.map((w, i) => (
+        <div key={i} style={{ color: "var(--text-secondary)", fontSize: 12, marginTop: 4, paddingLeft: 16 }}>⚠ {w}</div>
+      ))}
+    </div>
+  );
+}
+
+function WalkForwardChart({ wf }: { wf: WalkForwardResult }) {
+  const windows = wf.window_results;
+  if (!windows || windows.length === 0) return null;
+  const allValues = windows.flatMap(w => [w.in_sample_sharpe, w.out_of_sample_sharpe]);
+  const minV = Math.min(...allValues, 0);
+  const maxV = Math.max(...allValues, 0.1);
+  const range = maxV - minV || 1;
+  const W = 600, H = 140, padL = 40, padR = 16, padT = 12, padB = 28;
+  const chartW = W - padL - padR;
+  const chartH = H - padT - padB;
+  const n = windows.length;
+  const barWidth = Math.floor(chartW / (n * 2 + 1));
+  const gap = Math.floor(barWidth * 0.3);
+  const zeroY = padT + chartH - ((0 - minV) / range) * chartH;
+
+  const toY = (v: number) => padT + chartH - ((v - minV) / range) * chartH;
+  const toH = (v: number) => Math.abs(toY(v) - zeroY);
+
+  const robustColor = wf.is_robust ? "#3fb950" : "#f85149";
+
+  return (
+    <div style={{ background: "var(--bg-surface-1)", border: "1px solid var(--border-default)", borderRadius: "var(--radius-md)", padding: "20px", marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+        <div style={{ color: "var(--text-secondary)", fontSize: 12, textTransform: "uppercase", letterSpacing: "0.06em" }}>Walk-Forward Validation</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 12 }}>
+          <span style={{ color: "var(--text-secondary)" }}>IS Sharpe <span style={{ color: "#58a6ff" }}>■</span></span>
+          <span style={{ color: "var(--text-secondary)" }}>OOS Sharpe <span style={{ color: "#3fb950" }}>■</span></span>
+          <span style={{ fontWeight: 700, color: robustColor, fontSize: 11, textTransform: "uppercase" }}>
+            {wf.is_robust ? "✓ ROBUST" : "✗ OVERFIT"}
+          </span>
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 12 }}>
+        {[
+          { label: "Avg IS Sharpe",  value: fmt(wf.in_sample_sharpe) },
+          { label: "Avg OOS Sharpe", value: fmt(wf.out_of_sample_sharpe), color: wf.out_of_sample_sharpe > 0 ? "#3fb950" : "#f85149" },
+          { label: "Degradation",    value: isFinite(wf.degradation_ratio) ? `${fmt(wf.degradation_ratio)}x` : "∞x",
+            color: wf.degradation_ratio < 2 ? "#3fb950" : wf.degradation_ratio < 3 ? "#d9a428" : "#f85149" },
+        ].map(m => (
+          <div key={m.label} style={{ textAlign: "center" }}>
+            <div style={{ color: "var(--text-tertiary)", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.07em" }}>{m.label}</div>
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 18, fontWeight: 600, color: m.color ?? "var(--text-primary)" }}>{m.value}</div>
+          </div>
+        ))}
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: H }}>
+        {/* Zero line */}
+        <line x1={padL} y1={zeroY} x2={W - padR} y2={zeroY} stroke="var(--border-default)" strokeWidth="1" strokeDasharray="3,3" />
+        {/* Y axis label 0 */}
+        <text x={padL - 4} y={zeroY + 4} textAnchor="end" fill="var(--text-tertiary)" fontSize="9">0</text>
+        {windows.map((w, i) => {
+          const groupX = padL + i * (chartW / n) + chartW / (n * 2) - barWidth - gap / 2;
+          const isY = toY(w.in_sample_sharpe);
+          const oosY = toY(w.out_of_sample_sharpe);
+          const isH = toH(w.in_sample_sharpe);
+          const oosH = toH(w.out_of_sample_sharpe);
+          const oosColor = w.out_of_sample_sharpe >= 0 ? "#3fb950" : "#f85149";
+          return (
+            <g key={i}>
+              <rect x={groupX} y={w.in_sample_sharpe >= 0 ? isY : zeroY} width={barWidth} height={isH} fill="#58a6ff" opacity={0.75} rx="2" />
+              <rect x={groupX + barWidth + gap} y={w.out_of_sample_sharpe >= 0 ? oosY : zeroY} width={barWidth} height={oosH} fill={oosColor} opacity={0.8} rx="2" />
+              <text x={groupX + barWidth + gap / 2} y={H - 4} textAnchor="middle" fill="var(--text-tertiary)" fontSize="9">W{w.window_index}</text>
+            </g>
+          );
+        })}
+      </svg>
+      <div style={{ color: "var(--text-tertiary)", fontSize: 11, marginTop: 8 }}>
+        Degradation threshold: &lt;2.0x = robust, 2–3x = caution, &gt;3.0x = overfit. Current: {isFinite(wf.degradation_ratio) ? fmt(wf.degradation_ratio) + "x" : "∞"}.
       </div>
     </div>
   );
@@ -106,6 +248,7 @@ export default function BacktestPage() {
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
+
   const inputStyle = {
     background: "var(--bg-surface-2)", border: "1px solid var(--border-default)",
     borderRadius: "var(--radius-sm)", color: "var(--text-primary)",
@@ -167,10 +310,11 @@ export default function BacktestPage() {
           </button>
         </div>
 
+
         {/* Loading spinner */}
         {loading && (
           <div style={{ textAlign: "center", padding: 48, color: "var(--text-secondary)" }}>
-            <div style={{ fontSize: 32, marginBottom: 12, animation: "spin 1s linear infinite", display: "inline-block" }}>⟳</div>
+            <div style={{ fontSize: 32, marginBottom: 12, animation: "spin 1s linear infinite", display: "inline-block" }}>⏳</div>
             <div>Running backtest…</div>
             <style>{`@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
           </div>
@@ -186,16 +330,30 @@ export default function BacktestPage() {
         {/* Results */}
         {result?.status === "done" && (
           <>
+            {/* Memorization Risk Badge — always show when results are present */}
+            <MemorizationRiskBadge
+              risk={result.memorization_risk ?? "UNKNOWN"}
+              flags={result.validity_flags}
+            />
+
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 24 }}>
               <MetricCard label="Total Return" value={fmt(result.total_return_pct)} suffix="%" color={(result.total_return_pct ?? 0) >= 0 ? "var(--accent-profit)" : "var(--accent-loss)"} />
               <MetricCard label="CAGR" value={fmt(result.cagr)} suffix="%" />
-              <MetricCard label="Sharpe Ratio" value={fmt(result.sharpe_ratio)} />
+              <MetricCard label="Sharpe (raw)" value={fmt(result.sharpe_ratio)} />
+              <MetricCard
+                label="Sharpe (adjusted)"
+                value={fmt(result.validity_flags?.adjusted_sharpe ?? result.sharpe_ratio)}
+                color={result.memorization_risk === "HIGH" ? "var(--accent-loss)" : result.memorization_risk === "MEDIUM" ? "#d9a428" : undefined}
+              />
               <MetricCard label="Sortino Ratio" value={fmt(result.sortino_ratio)} />
               <MetricCard label="Max Drawdown" value={fmt(result.max_drawdown_pct)} suffix="%" color="var(--accent-loss)" />
               <MetricCard label="Win Rate" value={fmt(result.win_rate)} suffix="%" color={(result.win_rate ?? 0) >= 50 ? "var(--accent-profit)" : "var(--accent-loss)"} />
               <MetricCard label="Profit Factor" value={fmt(result.profit_factor)} />
               <MetricCard label="Total Trades" value={String(result.total_trades ?? 0)} />
             </div>
+
+            {/* Walk-Forward Validation Chart */}
+            {result.walk_forward && <WalkForwardChart wf={result.walk_forward} />}
 
             {/* Equity Curve */}
             <div className="glass-panel" style={{ padding: 20, marginBottom: 24 }}>
