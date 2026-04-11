@@ -277,3 +277,100 @@ AVAILABLE_STRATEGIES: dict[str, Callable] = {
     "commodity_momentum": commodity_momentum,
     "seasonal_commodity": seasonal_commodity,
 }
+
+
+def momentum_12_1(lookback: int = 20, skip_recent: int = 1) -> Callable:
+    """
+    Cross-sectional momentum — most robust academic factor.
+
+    Standard 12-1 momentum adapted for crypto/commodities:
+    - lookback=20 bars replaces the 12-month window (shorter for crypto)
+    - skip_recent=1 avoids short-term reversal (the '-1' in 12-1)
+
+    Signal:  score > 5% → BUY.  score < -5% → SELL.
+    Target:  1.5× the momentum score (mean-reversion buffer).
+    Stop:    4% below entry.
+    """
+    from src.signals.momentum import MomentumSignal
+    _signal = MomentumSignal()
+
+    def strategy(bar: OHLCVBar, history: list[OHLCVBar]) -> dict | None:
+        if len(history) < lookback + skip_recent:
+            return None
+        prices = [float(b.close) for b in history[-(lookback + skip_recent):]]
+        prices.append(float(bar.close))
+        score = _signal.calculate_momentum("_backtest", prices, lookback, skip_recent)
+        if score > 0.05:
+            stop = float(bar.close) * 0.96
+            target = float(bar.close) * (1 + score * 1.5)
+            return {"action": "BUY", "stop_loss": stop, "take_profit": target,
+                    "momentum_score": score}
+        if score < -0.05:
+            return {"action": "SELL", "momentum_score": score}
+        return None
+
+    strategy.__name__ = f"Momentum_{lookback}_{skip_recent}"
+    return strategy
+
+
+def risk_parity_momentum(
+    volatility_target: float = 0.15,
+    lookback: int = 20,
+    skip_recent: int = 1,
+) -> Callable:
+    """
+    Momentum strategy with volatility-scaled position sizing.
+
+    Combines two orthogonal edges:
+    - Cross-sectional momentum for direction (what to trade)
+    - Risk parity for sizing (how much to trade)
+
+    The vol_scalar returned in the signal dict tells the backtester how to
+    scale the default position size:
+        size × vol_scalar = size that targets `volatility_target` annualized vol
+
+    Example: target=15%, realized_vol=80% → vol_scalar=0.19 (shrink heavily)
+             target=15%, realized_vol=15% → vol_scalar=1.00 (no adjustment)
+             target=15%, realized_vol= 8% → vol_scalar=1.88 (scale up)
+    """
+    import math
+    from src.signals.momentum import MomentumSignal
+    _signal = MomentumSignal()
+
+    def strategy(bar: OHLCVBar, history: list[OHLCVBar]) -> dict | None:
+        if len(history) < lookback + skip_recent + 1:
+            return None
+
+        prices = [float(b.close) for b in history[-(lookback + skip_recent + 1):]]
+        prices.append(float(bar.close))
+        score = _signal.calculate_momentum("_backtest", prices, lookback, skip_recent)
+
+        # Realized volatility for position scaling (21-bar window)
+        recent = [float(b.close) for b in history[-21:]] + [float(bar.close)]
+        if len(recent) >= 2:
+            rets = [math.log(recent[i] / recent[i - 1]) for i in range(1, len(recent))]
+            n = len(rets)
+            mean_r = sum(rets) / n
+            var = sum((r - mean_r) ** 2 for r in rets) / max(n - 1, 1)
+            realized_vol = math.sqrt(var) * math.sqrt(252)
+        else:
+            realized_vol = 0.30
+
+        vol_scalar = volatility_target / max(realized_vol, 0.01)
+
+        if score > 0.05:
+            stop = float(bar.close) * 0.96
+            target = float(bar.close) * (1 + score * 1.5)
+            return {
+                "action": "BUY", "stop_loss": stop, "take_profit": target,
+                "vol_scalar": round(vol_scalar, 4),
+                "realized_vol": round(realized_vol, 4),
+                "momentum_score": round(score, 4),
+            }
+        if score < -0.05:
+            return {"action": "SELL", "vol_scalar": round(vol_scalar, 4),
+                    "realized_vol": round(realized_vol, 4)}
+        return None
+
+    strategy.__name__ = f"RiskParity_Momentum_{int(volatility_target * 100)}pct"
+    return strategy

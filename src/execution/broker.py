@@ -11,6 +11,9 @@ import structlog
 from src.streams.producer import produce, produce_audit
 from src.streams import topology
 from src.core.redis import get_redis
+from src.execution.position_sizer import VolatilityPositionSizer
+
+_sizer = VolatilityPositionSizer()
 
 logger = structlog.get_logger()
 
@@ -68,6 +71,17 @@ class PaperBroker:
         take_profit: float | None = None,
     ) -> Order:
         order_id = str(uuid.uuid4())[:8]
+
+        # Volatility-scaled position sizing (risk parity).
+        # Overrides the caller-requested quantity with one that targets
+        # equal risk contribution across all positions in the portfolio.
+        portfolio_value = self.get_portfolio_value({symbol: current_price})
+        vol_quantity = await _sizer.calculate_size(
+            symbol, portfolio_value, {symbol: current_price}
+        )
+        if vol_quantity > 0:
+            quantity = vol_quantity
+
         slip = current_price * self.slippage_pct
         filled_price = current_price + slip if side == "BUY" else current_price - slip
         commission = filled_price * quantity * self.commission_pct
