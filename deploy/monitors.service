@@ -1,0 +1,20 @@
+[Unit]
+Description=Trading Floor Real-Time Monitors (position 5s + risk 30s)
+After=trading-floor.service redis.service
+Requires=trading-floor.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/trading-floor
+ExecStart=/opt/trading-floor/.venv/bin/python scripts/run_monitors.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Restart quickly — a missed 5-second window matters
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target

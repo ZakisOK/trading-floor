@@ -64,6 +64,8 @@ class PaperBroker:
         current_price: float,
         agent_id: str = "system",
         strategy: str = "manual",
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
     ) -> Order:
         order_id = str(uuid.uuid4())[:8]
         slip = current_price * self.slippage_pct
@@ -81,6 +83,9 @@ class PaperBroker:
                 "symbol": symbol, "quantity": quantity,
                 "avg_price": filled_price, "side": "LONG",
                 "entry_time": datetime.now(UTC).isoformat(),
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "trailing_stop": None,
             }
         else:
             proceeds = filled_price * quantity - commission
@@ -97,7 +102,6 @@ class PaperBroker:
         )
         self._orders.append(order)
         self._trade_count += 1
-
         redis = get_redis()
         await produce(topology.TRADES, {
             "order_id": order_id, "symbol": symbol, "side": side,

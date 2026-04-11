@@ -12,6 +12,7 @@ from src.api.routers.backtest import router as backtest_router
 from src.api.routers.agents import router as agents_router
 from src.api.routers.orders import router as orders_router
 from src.api.routers.briefing import router as briefing_router
+from src.api.routers.execution import router as execution_router
 from src.api.ws.handler import broadcast_loop, websocket_endpoint
 from src.core.config import settings
 from src.core.redis import ensure_consumer_group
@@ -50,7 +51,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("shutting_down")
 
 
-app = FastAPI(title="The Trading Floor", version="0.7.0", lifespan=lifespan)
+app = FastAPI(title="The Trading Floor", version="0.8.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -65,6 +66,7 @@ app.include_router(backtest_router)
 app.include_router(agents_router)
 app.include_router(orders_router)
 app.include_router(briefing_router)
+app.include_router(execution_router)
 
 
 @app.get("/health")

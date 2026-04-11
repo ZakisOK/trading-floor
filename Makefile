@@ -1,4 +1,4 @@
-.PHONY: dev test lint format run migrate seed backtest bootstrap docker-up docker-down docker-logs paper-trade briefing
+.PHONY: dev test lint format run migrate seed backtest bootstrap docker-up docker-down docker-logs paper-trade briefing monitors
 
 dev:
 	docker compose up -d && uvicorn src.api.main:app --reload --port 8000
@@ -29,6 +29,9 @@ backtest:
 
 paper-trade:
 	python scripts/run_paper_trading.py
+
+monitors:
+	python scripts/run_monitors.py
 
 briefing:
 	curl -s http://localhost:8000/api/briefing | python -m json.tool

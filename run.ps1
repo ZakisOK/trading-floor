@@ -68,6 +68,12 @@ switch ($Target) {
         Activate-Venv
         python scripts\run_paper_trading.py
     }
+    "monitors" {
+        Write-Host "Starting real-time monitors..." -ForegroundColor Cyan
+        Write-Host "Position monitor: 5s | Risk monitor: 30s" -ForegroundColor Yellow
+        Activate-Venv
+        python scripts\run_monitors.py
+    }
     "backtest" {
         Activate-Venv
         python scripts\run_backtest.py
@@ -117,7 +123,8 @@ switch ($Target) {
         Write-Host "  .\run.ps1 dev          — Start API server (dev mode, hot reload)"
         Write-Host "  .\run.ps1 run          — Start API server (production mode)"
         Write-Host "  .\run.ps1 frontend     — Start Next.js frontend"
-        Write-Host "  .\run.ps1 paper-trade  — Start paper trading loop"
+        Write-Host "  .\run.ps1 paper-trade  — Start paper trading loop (5 min cycles)"
+        Write-Host "  .\run.ps1 monitors     — Start position + risk monitors (5s/30s)"
         Write-Host "  .\run.ps1 briefing     — Fetch trading briefing from API"
         Write-Host "  .\run.ps1 test         — Run test suite"
         Write-Host "  .\run.ps1 lint         — Run ruff + mypy"
@@ -133,7 +140,8 @@ switch ($Target) {
         Write-Host "  .\run.ps1 docker-up"
         Write-Host "  .\run.ps1 migrate"
         Write-Host "  .\run.ps1 paper-trade   # Terminal 1"
-        Write-Host "  .\run.ps1 frontend      # Terminal 2"
+        Write-Host "  .\run.ps1 monitors      # Terminal 2 — exits fire here"
+        Write-Host "  .\run.ps1 frontend      # Terminal 3"
         Write-Host ""
     }
     default {
