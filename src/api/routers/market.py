@@ -62,7 +62,7 @@ async def get_ohlcv(
             close=float(row.close),
             volume=float(row.volume),
         )
-        for row in reversed(rows)  # Return chronological order
+        for row in reversed(rows)
     ]
 
 
@@ -84,17 +84,9 @@ async def get_symbols(
         exch: str = row.exchange
         asset_class = "equity" if exch == "alpaca" else "crypto"
         parts = sym.split("/")
-        base = parts[0] if len(parts) > 1 else sym
+        base  = parts[0] if len(parts) > 1 else sym
         quote = parts[1] if len(parts) > 1 else ""
-        symbols.append(
-            SymbolInfo(
-                symbol=sym,
-                exchange=exch,
-                asset_class=asset_class,
-                base=base,
-                quote=quote,
-            )
-        )
+        symbols.append(SymbolInfo(symbol=sym, exchange=exch, asset_class=asset_class, base=base, quote=quote))
     return symbols
 
 
@@ -127,3 +119,111 @@ async def get_xrp_polymarket() -> list[dict]:
     """Get XRP-specific Polymarket markets."""
     markets = await _poly_feed.get_xrp_markets()
     return markets[:10]
+
+
+# ---------------------------------------------------------------------------
+# New Phase 2 endpoints: regime, sentiment, carry
+# ---------------------------------------------------------------------------
+
+@router.get("/regime")
+async def get_market_regime(symbol: str = "XRP/USDT") -> dict:
+    """
+    Return current market regime for a symbol from Redis cache.
+
+    Regime is written by RegimeDetector at the start of every graph cycle
+    (TTL 10 min). Returns UNKNOWN when no cycle has run yet.
+
+    Values: TRENDING | RANGING | VOLATILE | UNKNOWN
+    """
+    try:
+        from src.core.redis import get_redis
+        redis = get_redis()
+        safe_sym = symbol.replace("/", "_")
+        regime = await redis.get(f"market:regime:{safe_sym}")
+        if not regime:
+            # Fallback: check global key written by older graph versions
+            regime = await redis.get("market:regime")
+        return {
+            "symbol": symbol,
+            "regime": (regime or "UNKNOWN"),
+            "source": "redis_cache",
+        }
+    except Exception as exc:
+        return {"symbol": symbol, "regime": "UNKNOWN", "error": str(exc)}
+
+
+@router.get("/sentiment/{symbol}")
+async def get_sentiment(symbol: str) -> dict:
+    """
+    Return latest FinBERT/VADER sentiment score and recent headlines for a symbol.
+
+    Data is written to Redis by SentimentAnalystAgent after each graph cycle.
+    Key: sentiment:{symbol}  (TTL 3600s / 1 hour)
+
+    Returns:
+      score      float  [-1.0, +1.0]  (positive = bullish sentiment)
+      label      str    BULLISH | BEARISH | NEUTRAL
+      confidence float  [0.0, 1.0]
+      headlines  list   up to 5 recent headlines used for scoring
+      ts         str    ISO timestamp of last update
+    """
+    try:
+        import json
+        from src.core.redis import get_redis
+        redis = get_redis()
+        safe_sym = symbol.replace("/", "_").replace("=", "_")
+        raw = await redis.get(f"sentiment:{safe_sym}")
+        if raw:
+            data = json.loads(raw)
+            return {"symbol": symbol, **data}
+        return {
+            "symbol": symbol,
+            "score": 0.0,
+            "label": "NEUTRAL",
+            "confidence": 0.0,
+            "headlines": [],
+            "ts": None,
+            "note": "no_data_yet",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/carry/{symbol}")
+async def get_carry(symbol: str) -> dict:
+    """
+    Return current carry signal for a symbol.
+
+    CarryAgent writes to Redis after each cycle.
+    Key: carry:{symbol}  (TTL 3600s)
+
+    For commodity futures: roll yield (backwardation = positive carry).
+    For crypto:            funding rate (inverted — high funding = SHORT signal).
+
+    Returns:
+      carry_yield  float   annualized carry yield (positive = favorable)
+      direction    str     LONG | SHORT | NEUTRAL
+      confidence   float   [0.0, 1.0]
+      source       str     "roll_yield" | "funding_rate" | "none"
+      ts           str     ISO timestamp of last update
+    """
+    try:
+        import json
+        from src.core.redis import get_redis
+        redis = get_redis()
+        safe_sym = symbol.replace("/", "_").replace("=", "_")
+        raw = await redis.get(f"carry:{safe_sym}")
+        if raw:
+            data = json.loads(raw)
+            return {"symbol": symbol, **data}
+        return {
+            "symbol": symbol,
+            "carry_yield": 0.0,
+            "direction": "NEUTRAL",
+            "confidence": 0.0,
+            "source": "none",
+            "ts": None,
+            "note": "no_data_yet",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc

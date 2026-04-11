@@ -195,6 +195,9 @@ export default function MissionControlPage() {
   const [agents, setAgents] = useState<AgentPerf[]>([]);
   const [events, setEvents] = useState<StreamEvent[]>([]);
   const [regime, setRegime] = useState<string>("UNKNOWN");
+  const [macroRegime, setMacroRegime] = useState<string>("NEUTRAL");
+  const [effectiveSignals, setEffectiveSignals] = useState<number | null>(null);
+  const [sentimentBySymbol, setSentimentBySymbol] = useState<Record<string, { score: number; label: string }>>({});
   const [activeAgentCycle, setActiveAgentCycle] = useState<string>("Idle");
   const [activeSymbol, setActiveSymbol] = useState<string>("");
   const [assetTab, setAssetTab] = useState("Crypto");
@@ -231,8 +234,29 @@ export default function MissionControlPage() {
     } catch { /* noop */ }
 
     try {
-      const regRes = await fetch(`${API}/api/market/regime`).then(r => r.json());
+      const regRes = await fetch(`${API}/api/market/regime?symbol=XRP%2FUSDT`).then(r => r.json());
       setRegime(regRes?.regime ?? "UNKNOWN");
+    } catch { /* noop */ }
+
+    // Fetch macro regime from FRED cache snapshot
+    try {
+      const snapRaw = await fetch(`${API}/api/market/sentiment/MACRO`).then(r => r.json());
+      setMacroRegime(snapRaw?.macro_regime ?? snapRaw?.label ?? "NEUTRAL");
+    } catch { /* noop */ }
+
+    // Fetch sentiment for tracked symbols in parallel
+    try {
+      const sentSymbols = ["XRP/USDT", "BTC/USDT", "GC=F"];
+      const sentPaths   = ["XRP_USDT", "BTC_USDT", "GC_F"];
+      const sentRes = await Promise.allSettled(
+        sentPaths.map(p => fetch(`${API}/api/market/sentiment/${p}`).then(r => r.json()))
+      );
+      const sentMap: Record<string, { score: number; label: string }> = {};
+      sentRes.forEach((r, i) => {
+        if (r.status === "fulfilled")
+          sentMap[sentSymbols[i]] = { score: r.value?.score ?? 0, label: r.value?.label ?? "NEUTRAL" };
+      });
+      setSentimentBySymbol(sentMap);
     } catch { /* noop */ }
   }, []);
 
@@ -266,6 +290,9 @@ export default function MissionControlPage() {
             }
             if (data.type === "signal") {
               setSignals(prev => [data as Signal, ...prev].slice(0, 10));
+            }
+            if (data.type === "cycle_complete" && data.effective_signal_count != null) {
+              setEffectiveSignals(data.effective_signal_count as number);
             }
 
             eventsRef.current = [event, ...eventsRef.current].slice(0, 20);
@@ -369,6 +396,68 @@ export default function MissionControlPage() {
               regime === "TRENDING" ? "TRENDING" : undefined
             }
           />
+          <KPICard
+            label="Macro Regime"
+            value={macroRegime}
+            badge={
+              macroRegime === "RISK_OFF" ? "RISK-OFF" :
+              macroRegime === "RISK_ON"  ? "TRENDING"  : undefined
+            }
+            sub="FRED: VIX · yield curve · DXY"
+          />
+          <KPICard
+            label="Signal Pipeline"
+            value={effectiveSignals != null ? `${effectiveSignals.toFixed(1)} eff.` : "—"}
+            sub={`10 parallel agents → PCA`}
+            color="var(--accent-info)"
+          />
+        </div>
+
+        {/* Regime Intelligence Strip */}
+        <div className="glass-panel" style={{ padding: "14px 20px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ fontSize: 11, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+              Regime &amp; Sentiment Intelligence
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+              {effectiveSignals != null ? `PCA: 10 raw → ${effectiveSignals.toFixed(1)} effective` : "PCA: awaiting history"}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+            {(["XRP/USDT", "BTC/USDT", "GC=F"] as const).map(sym => {
+              const sent = sentimentBySymbol[sym];
+              const score = sent?.score ?? 0;
+              const label = sent?.label ?? "NEUTRAL";
+              const sentColor = score > 0.1 ? "var(--accent-profit)" : score < -0.1 ? "var(--accent-loss)" : "var(--text-tertiary)";
+              const pct = Math.round(Math.min(Math.abs(score), 1) * 100);
+              return (
+                <div key={sym} style={{
+                  flex: 1, minWidth: 160, padding: "10px 14px", borderRadius: 6,
+                  background: "rgba(255,255,255,0.03)", border: "1px solid var(--border-subtle)",
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text-primary)", fontFamily: "var(--font-mono, monospace)" }}>
+                      {sym.split("/")[0].replace("=F", "")}
+                    </span>
+                    <span style={{ fontSize: 10, fontWeight: 600, color: sentColor,
+                      padding: "1px 6px", borderRadius: 3,
+                      background: score > 0.1 ? "rgba(34,197,94,0.12)" : score < -0.1 ? "rgba(239,68,68,0.12)" : "rgba(255,255,255,0.05)",
+                    }}>
+                      {label}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <div style={{ flex: 1, height: 4, background: "var(--border-subtle)", borderRadius: 2, overflow: "hidden" }}>
+                      <div style={{ width: `${pct}%`, height: "100%", borderRadius: 2, background: sentColor }} />
+                    </div>
+                    <span style={{ fontSize: 10, color: sentColor, fontFamily: "var(--font-mono, monospace)" }}>
+                      {score >= 0 ? "+" : ""}{score.toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         {/* Row 2: Live feeds */}
@@ -396,7 +485,8 @@ export default function MissionControlPage() {
               </div>
             )}
             <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 4 }}>
-              {["marcus", "copy_trade_scout", "vera", "rex", "nova"].map(ag => (
+              {["marcus", "sentiment_analyst", "momentum_agent", "cot_analyst", "carry_agent",
+                "macro_analyst", "options_flow_agent", "copy_trade_scout", "vera", "nova"].map(ag => (
                 <div key={ag} style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
                   <span style={{ color: "var(--text-tertiary)", textTransform: "capitalize" }}>
                     {ag.replace("_", " ")}
