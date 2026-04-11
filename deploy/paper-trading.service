@@ -1,0 +1,16 @@
+[Unit]
+Description=Trading Floor Paper Trading Loop
+After=trading-floor.service
+Requires=trading-floor.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/trading-floor
+ExecStart=/opt/trading-floor/.venv/bin/python scripts/run_paper_trading.py
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

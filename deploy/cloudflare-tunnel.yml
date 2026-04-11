@@ -1,0 +1,9 @@
+tunnel: trading-floor
+credentials-file: /root/.cloudflared/trading-floor.json
+
+ingress:
+  - hostname: trading.YOURDOMAIN.com
+    service: http://localhost:3000
+  - hostname: api.trading.YOURDOMAIN.com
+    service: http://localhost:8000
+  - service: http_status:404
