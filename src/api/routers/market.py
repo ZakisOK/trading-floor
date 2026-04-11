@@ -9,8 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.database import get_session
 from src.data.models.market import OHLCV
 from src.data.schemas.market import OHLCVResponse, SymbolInfo
+from src.data.feeds.polymarket_feed import PolymarketFeed
 
 router = APIRouter(prefix="/market", tags=["market"])
+
+_poly_feed = PolymarketFeed()
 
 _VALID_TIMEFRAMES = {"1m", "5m", "15m", "30m", "1h", "4h", "1D", "1W"}
 
@@ -99,3 +102,28 @@ async def get_symbols(
 async def get_timeframes() -> list[str]:
     """Return all valid timeframe strings."""
     return sorted(_VALID_TIMEFRAMES)
+
+
+@router.get("/polymarket/signals")
+async def get_polymarket_signals(symbol: str = "XRP/USDT") -> list[dict]:
+    """Get Polymarket prediction market signals relevant to a trading symbol."""
+    signals = await _poly_feed.get_trading_signals()
+    return [
+        {
+            "question": s.question,
+            "yes_probability": s.yes_price,
+            "no_probability": s.no_price,
+            "volume_24h": s.volume_24h,
+            "relevance": s.relevance,
+            "implication": s.trading_implication,
+            "end_date": s.end_date,
+        }
+        for s in signals
+    ]
+
+
+@router.get("/polymarket/xrp")
+async def get_xrp_polymarket() -> list[dict]:
+    """Get XRP-specific Polymarket markets."""
+    markets = await _poly_feed.get_xrp_markets()
+    return markets[:10]

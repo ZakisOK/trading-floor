@@ -67,7 +67,36 @@ def rsi_mean_reversion(
     return strategy
 
 
+def xrp_momentum(lookback: int = 20, momentum_threshold: float = 0.02) -> Callable:
+    """
+    XRP momentum strategy based on price action.
+    XRP tends to make sharp moves — capture breakouts above recent range.
+    """
+    def strategy(bar: OHLCVBar, history: list[OHLCVBar]) -> dict | None:
+        if len(history) < lookback:
+            return None
+        closes = [float(b.close) for b in history[-lookback:]]
+        current = float(bar.close)
+        high = max(closes)
+        low = min(closes)
+        range_pct = (high - low) / low if low > 0 else 0
+
+        # Breakout above range with momentum
+        if current > high * (1 + momentum_threshold / 2) and range_pct > 0.03:
+            stop = current * 0.96    # 4% stop (XRP is volatile)
+            target = current * 1.12  # 12% target
+            return {"action": "BUY", "stop_loss": stop, "take_profit": target}
+        # Break below range
+        if current < low * (1 - momentum_threshold / 2):
+            return {"action": "SELL"}
+        return None
+
+    strategy.__name__ = f"XRP_Momentum_{lookback}"
+    return strategy
+
+
 AVAILABLE_STRATEGIES: dict[str, Callable] = {
     "sma_crossover": sma_crossover,
     "rsi_mean_reversion": rsi_mean_reversion,
+    "xrp_momentum": xrp_momentum,
 }

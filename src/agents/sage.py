@@ -26,39 +26,60 @@ from src.agents.vera import VeraAgent
 from src.agents.rex import RexAgent
 from src.agents.diana import DianaAgent
 from src.agents.atlas import AtlasAgent
+from src.agents.xrp_analyst import XRPAnalystAgent
+from src.agents.polymarket_scout import PolymarketScoutAgent
 
 marcus = MarcusAgent()
 vera = VeraAgent()
 rex = RexAgent()
 diana = DianaAgent()
 atlas = AtlasAgent()
+xrp_analyst = XRPAnalystAgent()
+polymarket_scout = PolymarketScoutAgent()
 
 
-def _route_after_analysis(state: AgentState) -> str:
-    return "diana"
+def _route_after_rex(state: AgentState) -> str:
+    """Route to xrp_analyst for XRP symbols, otherwise skip straight to polymarket_scout."""
+    market = state.get("market_data") or {}
+    symbol = market.get("symbol", "")
+    if "XRP" in symbol:
+        return "xrp_analyst"
+    return "polymarket_scout"
 
 
-def _route_after_risk(state: AgentState) -> str:
+def _route_after_diana(state: AgentState) -> str:
     return "atlas" if state.get("risk_approved") else _END
 
 
 def build_trading_graph():  # type: ignore[return]
-    """Build and compile the LangGraph trading workflow."""
+    """Build and compile the LangGraph trading workflow.
+
+    Route: marcus → vera → rex → [xrp_analyst if XRP] → polymarket_scout → diana → atlas
+    """
     if not _LANGGRAPH_AVAILABLE:
         return None
     graph = StateGraph(AgentState)
     graph.add_node("marcus", marcus.analyze)
     graph.add_node("vera", vera.analyze)
     graph.add_node("rex", rex.analyze)
+    graph.add_node("xrp_analyst", xrp_analyst.analyze)
+    graph.add_node("polymarket_scout", polymarket_scout.analyze)
     graph.add_node("diana", diana.analyze)
     graph.add_node("atlas", atlas.analyze)
+
     graph.set_entry_point("marcus")
     graph.add_edge("marcus", "vera")
     graph.add_edge("vera", "rex")
-    graph.add_conditional_edges("rex", _route_after_analysis, {"diana": "diana"})
     graph.add_conditional_edges(
-        "diana", _route_after_risk, {"atlas": "atlas", _END: _END}
+        "rex",
+        _route_after_rex,
+        {"xrp_analyst": "xrp_analyst", "polymarket_scout": "polymarket_scout"},
     )
+    graph.add_edge("xrp_analyst", "polymarket_scout")
+    graph.add_conditional_edges(
+        "diana", _route_after_diana, {"atlas": "atlas", _END: _END}
+    )
+    graph.add_edge("polymarket_scout", "diana")
     graph.add_edge("atlas", _END)
     return graph.compile()
 
@@ -82,7 +103,12 @@ async def run_trading_cycle(symbol: str, market_data: dict) -> AgentState:
     if trading_graph is None:
         # Fallback: run agents sequentially without LangGraph
         state = initial
-        for agent in [marcus, vera, rex, diana, atlas]:
+        market = state.get("market_data") or {}
+        sym = market.get("symbol", "")
+        base_agents = [marcus, vera, rex]
+        xrp_agents = [xrp_analyst] if "XRP" in sym else []
+        tail_agents = [polymarket_scout, diana, atlas]
+        for agent in base_agents + xrp_agents + tail_agents:
             state = await agent.analyze(state)
         return state
 

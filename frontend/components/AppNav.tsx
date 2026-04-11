@@ -9,7 +9,8 @@ const NAV = [
   { href: "/agents",    label: "Agents",          icon: "🤖" },
   { href: "/floor",     label: "Trading Floor",   icon: "🏛" },
   { href: "/risk",      label: "Risk",            icon: "🛡" },
-  { href: "/execution", label: "Execution",       icon: "⚡" },
+  { href: "/execution",  label: "Execution",       icon: "⚡" },
+  { href: "/polymarket", label: "Polymarket",      icon: "🎯" },
 ];
 
 export function AppNav() {
