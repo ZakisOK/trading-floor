@@ -22,5 +22,21 @@ class Settings(BaseSettings):
     max_risk_per_trade: float = 0.02
     max_daily_loss: float = 0.05
 
+    # Market data enrichment
+    fred_api_key: str = ""
+    eia_api_key: str = ""
+
+    # XRPL on-chain tracking
+    xrpl_whale_tracking: bool = True
+
+    # Copy trading
+    binance_leaderboard_enabled: bool = True
+    copy_trade_min_confidence: float = 0.65
+
+    # Position & risk monitoring intervals
+    position_monitor_interval_seconds: int = 5
+    risk_monitor_interval_seconds: int = 30
+    trailing_stop_trigger_pct: float = 0.05
+
 
 settings = Settings()

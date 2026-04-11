@@ -1,4 +1,4 @@
-# run.ps1 — Windows equivalent of Makefile
+﻿# run.ps1 â€” Windows equivalent of Makefile
 # Usage: .\run.ps1 <target>
 # Example: .\run.ps1 migrate
 
@@ -112,35 +112,45 @@ switch ($Target) {
         Activate-Venv
         python -c "import asyncio; from src.core.security import activate_kill_switch; asyncio.run(activate_kill_switch('manual', 'operator'))"
     }
+    "health" {
+        Write-Host "Running pre-flight health check..." -ForegroundColor Cyan
+        Activate-Venv
+        python scripts\health_check.py
+    }
+    "portfolio-chief" {
+        Write-Host "Starting Portfolio Chief (Desk 3 oversight)..." -ForegroundColor Cyan
+        Activate-Venv
+        python -c "import asyncio; from src.oversight.portfolio_chief import run; asyncio.run(run())"
+    }
     "help" {
         Write-Host ""
-        Write-Host "The Trading Floor — Available Commands" -ForegroundColor Cyan
+        Write-Host "The Trading Floor â€” Available Commands" -ForegroundColor Cyan
         Write-Host "======================================" -ForegroundColor Cyan
-        Write-Host "  .\run.ps1 setup        — Create venv and install dependencies"
-        Write-Host "  .\run.ps1 docker-up    — Start Postgres, QuestDB, Redis"
-        Write-Host "  .\run.ps1 migrate      — Run Alembic DB migrations"
-        Write-Host "  .\run.ps1 bootstrap    — Create Redis consumer groups"
-        Write-Host "  .\run.ps1 dev          — Start API server (dev mode, hot reload)"
-        Write-Host "  .\run.ps1 run          — Start API server (production mode)"
-        Write-Host "  .\run.ps1 frontend     — Start Next.js frontend"
-        Write-Host "  .\run.ps1 paper-trade  — Start paper trading loop (5 min cycles)"
-        Write-Host "  .\run.ps1 monitors     — Start position + risk monitors (5s/30s)"
-        Write-Host "  .\run.ps1 briefing     — Fetch trading briefing from API"
-        Write-Host "  .\run.ps1 test         — Run test suite"
-        Write-Host "  .\run.ps1 lint         — Run ruff + mypy"
-        Write-Host "  .\run.ps1 format       — Auto-format with ruff"
-        Write-Host "  .\run.ps1 seed         — Seed the database"
-        Write-Host "  .\run.ps1 backtest     — Run backtest script"
-        Write-Host "  .\run.ps1 kill-switch  — Emergency stop all trading"
-        Write-Host "  .\run.ps1 docker-down  — Stop all Docker services"
-        Write-Host "  .\run.ps1 docker-logs  — Tail Docker service logs"
+        Write-Host "  .\run.ps1 setup        â€” Create venv and install dependencies"
+        Write-Host "  .\run.ps1 docker-up    â€” Start Postgres, QuestDB, Redis"
+        Write-Host "  .\run.ps1 migrate      â€” Run Alembic DB migrations"
+        Write-Host "  .\run.ps1 bootstrap    â€” Create Redis consumer groups"
+        Write-Host "  .\run.ps1 dev          â€” Start API server (dev mode, hot reload)"
+        Write-Host "  .\run.ps1 run          â€” Start API server (production mode)"
+        Write-Host "  .\run.ps1 frontend     â€” Start Next.js frontend"
+        Write-Host "  .\run.ps1 paper-trade  â€” Start paper trading loop (5 min cycles)"
+        Write-Host "  .\run.ps1 monitors     â€” Start position + risk monitors (5s/30s)"
+        Write-Host "  .\run.ps1 briefing     â€” Fetch trading briefing from API"
+        Write-Host "  .\run.ps1 test         â€” Run test suite"
+        Write-Host "  .\run.ps1 lint         â€” Run ruff + mypy"
+        Write-Host "  .\run.ps1 format       â€” Auto-format with ruff"
+        Write-Host "  .\run.ps1 seed         â€” Seed the database"
+        Write-Host "  .\run.ps1 backtest     â€” Run backtest script"
+        Write-Host "  .\run.ps1 kill-switch  â€” Emergency stop all trading"
+        Write-Host "  .\run.ps1 docker-down  â€” Stop all Docker services"
+        Write-Host "  .\run.ps1 docker-logs  â€” Tail Docker service logs"
         Write-Host ""
         Write-Host "Quick start:" -ForegroundColor Yellow
         Write-Host "  .\run.ps1 setup"
         Write-Host "  .\run.ps1 docker-up"
         Write-Host "  .\run.ps1 migrate"
         Write-Host "  .\run.ps1 paper-trade   # Terminal 1"
-        Write-Host "  .\run.ps1 monitors      # Terminal 2 — exits fire here"
+        Write-Host "  .\run.ps1 monitors      # Terminal 2 â€” exits fire here"
         Write-Host "  .\run.ps1 frontend      # Terminal 3"
         Write-Host ""
     }

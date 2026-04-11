@@ -39,6 +39,33 @@ services:
       timeout: 5s
       retries: 5
 
+  monitors:
+    build: .
+    command: python scripts/run_monitors.py
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://tradingfloor:tradingfloor_dev@postgres:5432/tradingfloor
+    env_file:
+      - .env
+    restart: unless-stopped
+
+  portfolio-chief:
+    build: .
+    command: python -c "import asyncio; from src.oversight.portfolio_chief import run; asyncio.run(run())"
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    env_file:
+      - .env
+    restart: unless-stopped
+
 volumes:
   pgdata:
   questdata:

@@ -52,7 +52,7 @@ async def _get_market_price(symbol: str) -> float:
 
 
 async def run_cycle(symbol: str) -> None:
-    from src.agents.sage import run_trading_cycle
+    from src.agents.graph import run_trading_cycle
     price = await _get_market_price(symbol)
     market_data = {"close": price, "volume": 1000.0}
     result = await run_trading_cycle(symbol, market_data)
