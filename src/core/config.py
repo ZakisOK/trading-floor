@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     max_risk_per_trade: float = 0.02
     max_daily_loss: float = 0.05
 
+    # News & Sentiment
+    news_api_key: str = ""              # NewsAPI.org free tier (100 req/day); blank → RSS fallback
+    sentiment_backend: str = "vader"    # "finbert" or "vader"; auto-downgrades if deps missing
+
     # Market data enrichment
     fred_api_key: str = ""
     eia_api_key: str = ""

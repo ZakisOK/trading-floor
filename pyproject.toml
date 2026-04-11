@@ -41,6 +41,14 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
+sentiment = [
+    # FinBERT (ProsusAI/finbert) — downloads ~440 MB model on first run, cached by HuggingFace
+    # Requires CUDA or MPS for reasonable throughput; runs on CPU but slowly
+    "transformers>=4.40",
+    "torch>=2.2",
+    # VADER — lightweight fallback, no GPU required, 60-70% of FinBERT accuracy
+    "nltk>=3.8",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
