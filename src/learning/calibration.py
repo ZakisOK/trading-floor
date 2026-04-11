@@ -9,8 +9,14 @@ After every 10 resolved trades per agent, this module:
   4. Stores results in Redis
   5. Logs a warning if calibration is drifting worse
 
+Phase 2 addition: get_agent_regime_accuracy(agent_id, regime)
+  Returns accuracy split by market regime so Nova can apply
+  regime-specific weights. Example: "Marcus is 71% accurate in TRENDING
+  but only 51% in VOLATILE."
+
 Redis keys:
-  agent:{agent_id}:calibration  — Hash: ece, last_checked, bucket data (JSON)
+  agent:{agent_id}:calibration            — Hash: ece, last_checked, bucket data (JSON)
+  agent:{agent_id}:calibration:regime:{r} — Hash: wins, total, accuracy per regime
 """
 from __future__ import annotations
 
@@ -27,8 +33,14 @@ logger = structlog.get_logger()
 # Minimum resolved signals before we attempt calibration
 MIN_SIGNALS_FOR_CALIBRATION = 10
 
+# Minimum per-regime signals before we trust regime-split accuracy
+MIN_REGIME_SIGNALS = 5
+
 # Confidence buckets: 0.5–0.6, 0.6–0.7, 0.7–0.8, 0.8–0.9, 0.9–1.0
 BUCKETS = [(0.5, 0.6), (0.6, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.01)]
+
+# Default accuracy when regime-specific data is insufficient
+DEFAULT_REGIME_ACCURACY = 0.5
 
 
 async def run_calibration_check(agent_id: str) -> dict:
@@ -36,21 +48,23 @@ async def run_calibration_check(agent_id: str) -> dict:
     Runs calibration analysis for one agent.
     Reads their full signal history from Redis, bins by confidence,
     computes ECE, and persists the result.
+    Also rebuilds regime-split accuracy buckets as a side effect.
 
     Returns a dict with keys: agent_id, ece, buckets, total_signals, status.
     """
     redis = get_redis()
 
-    # Pull all signal IDs for this agent (most recent 200)
     signal_ids = await redis.zrevrange(f"agent:{agent_id}:signals", 0, 199)
     if not signal_ids:
         return {"agent_id": agent_id, "status": "no_data", "ece": None}
 
-    # Build bucket accumulators: {bucket_label: {"count": N, "wins": N, "mid": float}}
     bucket_data: dict[str, dict] = {}
     for lo, hi in BUCKETS:
         label = f"{lo:.1f}-{hi:.1f}"
         bucket_data[label] = {"lo": lo, "hi": hi, "mid": (lo + hi) / 2, "count": 0, "wins": 0}
+
+    # Regime-split accumulators: {regime: {"wins": int, "total": int}}
+    regime_buckets: dict[str, dict] = {}
 
     total_resolved = 0
 
@@ -68,8 +82,9 @@ async def run_calibration_check(agent_id: str) -> dict:
             continue
 
         total_resolved += 1
+        regime = rec.get("regime", "UNKNOWN")
 
-        # Find the matching bucket
+        # Update confidence bucket
         for lo, hi in BUCKETS:
             if lo <= conf < hi:
                 label = f"{lo:.1f}-{hi:.1f}"
@@ -77,6 +92,13 @@ async def run_calibration_check(agent_id: str) -> dict:
                 if outcome == "WIN":
                     bucket_data[label]["wins"] += 1
                 break
+
+        # Update regime bucket
+        if regime not in regime_buckets:
+            regime_buckets[regime] = {"wins": 0, "total": 0}
+        regime_buckets[regime]["total"] += 1
+        if outcome == "WIN":
+            regime_buckets[regime]["wins"] += 1
 
     if total_resolved < MIN_SIGNALS_FOR_CALIBRATION:
         return {
@@ -87,7 +109,6 @@ async def run_calibration_check(agent_id: str) -> dict:
         }
 
     # Compute Expected Calibration Error (ECE)
-    # ECE = Σ (bucket_count / total) * |actual_win_rate - bucket_midpoint|
     ece = 0.0
     bucket_summary = []
     for label, b in bucket_data.items():
@@ -105,7 +126,6 @@ async def run_calibration_check(agent_id: str) -> dict:
             "error": round(error, 4),
         })
 
-    # Determine drift status
     if ece < 0.05:
         status = "well_calibrated"
     elif ece < 0.15:
@@ -122,7 +142,7 @@ async def run_calibration_check(agent_id: str) -> dict:
         "checked_at": datetime.now(UTC).isoformat(),
     }
 
-    # Persist to Redis
+    # Persist calibration result
     await redis.hset(f"agent:{agent_id}:calibration", mapping={
         "ece": str(ece),
         "status": status,
@@ -130,6 +150,16 @@ async def run_calibration_check(agent_id: str) -> dict:
         "buckets": json.dumps(bucket_summary),
         "last_checked": datetime.now(UTC).isoformat(),
     })
+
+    # Persist regime-split accuracy
+    for regime, stats in regime_buckets.items():
+        accuracy = stats["wins"] / stats["total"] if stats["total"] > 0 else DEFAULT_REGIME_ACCURACY
+        await redis.hset(f"agent:{agent_id}:calibration:regime:{regime}", mapping={
+            "wins": str(stats["wins"]),
+            "total": str(stats["total"]),
+            "accuracy": str(round(accuracy, 4)),
+            "last_checked": datetime.now(UTC).isoformat(),
+        })
 
     if status == "poorly_calibrated":
         logger.warning(
@@ -140,14 +170,41 @@ async def run_calibration_check(agent_id: str) -> dict:
             recommendation="Prompt adjustment needed — agent over/under-stating confidence",
         )
     else:
-        logger.info(
-            "agent_calibration_ok",
-            agent=agent_id,
-            ece=round(ece, 4),
-            status=status,
-        )
+        logger.info("agent_calibration_ok", agent=agent_id, ece=round(ece, 4), status=status)
 
     return result
+
+
+async def get_agent_regime_accuracy(agent_id: str, regime: str) -> float:
+    """
+    Returns this agent's historical win rate specifically within the given regime.
+
+    Computed and cached by run_calibration_check() — falls back to DEFAULT_REGIME_ACCURACY
+    (0.5 equal weight) when fewer than MIN_REGIME_SIGNALS trades exist for this regime.
+
+    Example:
+        await get_agent_regime_accuracy("marcus", "TRENDING")  # → 0.71
+        await get_agent_regime_accuracy("marcus", "VOLATILE")  # → 0.51
+
+    Nova uses this to give Marcus higher weight when the regime is TRENDING
+    (his strong suit) and lower weight in VOLATILE markets.
+    """
+    redis = get_redis()
+    try:
+        data = await redis.hgetall(f"agent:{agent_id}:calibration:regime:{regime}")
+        if not data:
+            return DEFAULT_REGIME_ACCURACY
+
+        total = int(data.get("total", 0))
+        if total < MIN_REGIME_SIGNALS:
+            return DEFAULT_REGIME_ACCURACY
+
+        accuracy = float(data.get("accuracy", DEFAULT_REGIME_ACCURACY))
+        return accuracy
+
+    except Exception as exc:
+        logger.warning("get_agent_regime_accuracy_failed", agent=agent_id, regime=regime, error=str(exc))
+        return DEFAULT_REGIME_ACCURACY
 
 
 async def run_all_calibrations(agent_ids: list[str]) -> list[dict]:

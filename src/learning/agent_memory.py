@@ -3,14 +3,15 @@ AgentMemory — persistent per-agent memory stored in Redis.
 
 Each agent accumulates a history of signal calls and their trade outcomes.
 This feeds two things:
-  1. Nova's Bayesian aggregation (rolling accuracy weights)
+  1. Nova's Bayesian aggregation (rolling accuracy weights, optionally regime-split)
   2. Lesson injection into each agent's next prompt (similar-situation retrieval)
 
 Redis key schema:
-  signal:{signal_id}           — Hash: full signal record + outcome
-  agent:{agent_id}:signals     — Sorted set: signal_ids scored by timestamp
-  agent:{agent_id}:accuracy    — Hash: rolling win/loss counts
-  agent:{agent_id}:weight      — String: current Bayesian weight (0.0–1.0)
+  signal:{signal_id}                       — Hash: full signal record + outcome
+  agent:{agent_id}:signals                 — Sorted set: signal_ids scored by timestamp
+  agent:{agent_id}:accuracy                — Hash: rolling win/loss counts
+  agent:{agent_id}:weight                  — String: current Bayesian weight (0.0–1.0)
+  agent:{agent_id}:calibration:regime:{r}  — Hash: regime-split accuracy (from calibration.py)
 """
 from __future__ import annotations
 
@@ -76,14 +77,9 @@ class AgentMemory:
             "hold_time_minutes": "",
         }
 
-        # Persist the full record as a hash
         await redis.hset(f"signal:{sid}", mapping=record)
-        # Expire after 90 days to avoid unbounded growth
         await redis.expire(f"signal:{sid}", 60 * 60 * 24 * 90)
-
-        # Add to the agent's sorted-set history (score = unix timestamp)
         await redis.zadd(f"agent:{agent_id}:signals", {sid: now})
-        # Keep only the most recent ROLLING_WINDOW * 2 entries in the sorted set
         await redis.zremrangebyrank(f"agent:{agent_id}:signals", 0, -(ROLLING_WINDOW * 2 + 1))
 
         logger.debug("agent_memory_signal_recorded", agent=agent_id, signal_id=sid, symbol=symbol)
@@ -103,7 +99,6 @@ class AgentMemory:
         """
         redis = get_redis()
 
-        # Update the signal record
         await redis.hset(f"signal:{signal_id}", mapping={
             "outcome": outcome,
             "pnl_pct": str(pnl_pct),
@@ -111,13 +106,11 @@ class AgentMemory:
             "resolved_at": datetime.now(UTC).isoformat(),
         })
 
-        # Pull the agent_id from the stored record to update their stats
         agent_id = await redis.hget(f"signal:{signal_id}", "agent_id")
         if not agent_id:
             logger.warning("record_outcome_no_agent", signal_id=signal_id)
             return
 
-        # Increment win/loss counters
         if outcome == "WIN":
             await redis.hincrby(f"agent:{agent_id}:accuracy", "wins", 1)
         elif outcome == "LOSS":
@@ -127,7 +120,6 @@ class AgentMemory:
 
         await redis.hincrby(f"agent:{agent_id}:accuracy", "total", 1)
 
-        # Recalculate and cache this agent's Bayesian weight
         new_weight = await self._recalculate_weight(agent_id)
         await redis.set(f"agent:{agent_id}:weight", str(new_weight))
 
@@ -144,11 +136,58 @@ class AgentMemory:
     # Reading — accuracy & weights
     # -------------------------------------------------------------------------
 
-    async def get_agent_accuracy(self, agent_id: str, last_n: int = ROLLING_WINDOW) -> float:
-        """Returns win rate over the last N resolved signals for this agent."""
-        redis = get_redis()
+    async def get_agent_accuracy(
+        self,
+        agent_id: str,
+        last_n: int = ROLLING_WINDOW,
+        regime: str | None = None,
+    ) -> float:
+        """
+        Returns win rate over the last N resolved signals for this agent.
 
-        # Walk the most recent last_n signal IDs from the sorted set
+        When `regime` is provided, returns accuracy filtered to signals recorded
+        in that regime only. Falls back to overall accuracy if regime-filtered
+        data has fewer than 5 signals.
+
+        Phase 2 usage in Nova:
+            weight = await agent_memory.get_agent_accuracy(agent_id, regime=current_regime, last_n=30)
+        """
+        if regime is not None:
+            # Try regime-specific accuracy from calibration cache first
+            redis = get_redis()
+            try:
+                data = await redis.hgetall(f"agent:{agent_id}:calibration:regime:{regime}")
+                if data:
+                    total = int(data.get("total", 0))
+                    if total >= 5:
+                        return float(data.get("accuracy", DEFAULT_WEIGHT))
+            except Exception:
+                pass
+
+            # Fall back: scan signal history and filter by regime
+            redis = get_redis()
+            recent_ids = await redis.zrevrange(f"agent:{agent_id}:signals", 0, last_n * 3 - 1)
+            wins = 0
+            resolved = 0
+            for sid in recent_ids:
+                if resolved >= last_n:
+                    break
+                sig_regime = await redis.hget(f"signal:{sid}", "regime")
+                if sig_regime != regime:
+                    continue
+                outcome = await redis.hget(f"signal:{sid}", "outcome")
+                if outcome in ("WIN", "LOSS"):
+                    resolved += 1
+                    if outcome == "WIN":
+                        wins += 1
+
+            if resolved < 5:
+                # Not enough regime-specific history — fall back to overall
+                return await self.get_agent_accuracy(agent_id, last_n=last_n, regime=None)
+            return wins / resolved
+
+        # Overall accuracy (no regime filter)
+        redis = get_redis()
         recent_ids = await redis.zrevrange(f"agent:{agent_id}:signals", 0, last_n - 1)
         if not recent_ids:
             return DEFAULT_WEIGHT
@@ -167,10 +206,7 @@ class AgentMemory:
         return wins / resolved
 
     async def get_agent_weight(self, agent_id: str) -> float:
-        """
-        Returns cached Bayesian weight for this agent.
-        Falls back to DEFAULT_WEIGHT if no history exists yet.
-        """
+        """Returns cached Bayesian weight. Falls back to DEFAULT_WEIGHT."""
         redis = get_redis()
         raw = await redis.get(f"agent:{agent_id}:weight")
         if raw is None:
@@ -180,16 +216,13 @@ class AgentMemory:
         except ValueError:
             return DEFAULT_WEIGHT
 
-    async def suppress_agent_weight(self, agent_id: str, factor: float = 0.75, ttl_seconds: int = 3600) -> None:
-        """
-        Temporarily reduce an agent's weight by `factor` for `ttl_seconds`.
-        Used by Portfolio Chief when a mistake pattern is detected.
-        Factor=0.75 means a 25% reduction.
-        """
+    async def suppress_agent_weight(
+        self, agent_id: str, factor: float = 0.75, ttl_seconds: int = 3600
+    ) -> None:
+        """Temporarily reduce an agent's weight by `factor` for `ttl_seconds`."""
         redis = get_redis()
         current = await self.get_agent_weight(agent_id)
         suppressed = current * factor
-        # Store with TTL so it auto-expires
         await redis.set(f"agent:{agent_id}:weight:suppressed", str(suppressed), ex=ttl_seconds)
         logger.warning(
             "agent_weight_suppressed",
@@ -221,13 +254,8 @@ class AgentMemory:
         regime: str,
         n: int = 3,
     ) -> list[dict]:
-        """
-        Retrieves the N most similar past situations this agent faced.
-        Similarity: same symbol + same regime label (most recent first).
-        Returns list of dicts with keys: situation, direction, outcome, pnl_pct.
-        """
+        """Retrieves the N most similar past situations this agent faced."""
         redis = get_redis()
-        # Walk recent signals for this agent
         recent_ids = await redis.zrevrange(f"agent:{agent_id}:signals", 0, 99)
         matches: list[dict] = []
 
@@ -237,10 +265,8 @@ class AgentMemory:
             rec = await redis.hgetall(f"signal:{sid}")
             if not rec:
                 continue
-            # Must be resolved
             if rec.get("outcome") not in ("WIN", "LOSS", "NEUTRAL"):
                 continue
-            # Match on symbol and regime
             if rec.get("symbol") != symbol:
                 continue
             if rec.get("regime") != regime and regime != "UNKNOWN":
@@ -257,22 +283,8 @@ class AgentMemory:
 
         return matches
 
-    async def get_lessons_for_agent(
-        self,
-        agent_id: str,
-        symbol: str,
-        regime: str,
-    ) -> str:
-        """
-        Returns a formatted string of lessons to inject into the agent's next prompt.
-
-        Example output:
-          "Your last 3 XRP/USDT LONG calls in VOLATILE regime:
-            - 2026-01-10: LONG (conf 0.82) → WIN (+8.2%)
-            - 2026-01-08: LONG (conf 0.79) → LOSS (-4.1%)
-            - 2026-01-06: LONG (conf 0.71) → LOSS (-3.8%)
-          Your XRP/USDT accuracy in VOLATILE: 33%. Consider reducing confidence."
-        """
+    async def get_lessons_for_agent(self, agent_id: str, symbol: str, regime: str) -> str:
+        """Returns a formatted string of lessons to inject into the agent's next prompt."""
         similar = await self.get_similar_situations(agent_id, symbol, regime, n=5)
         if not similar:
             return ""
@@ -289,9 +301,7 @@ class AgentMemory:
             )
 
         win_rate_pct = int(accuracy * 100)
-        lines.append(
-            f"Your overall accuracy across last {ROLLING_WINDOW} signals: {win_rate_pct}%."
-        )
+        lines.append(f"Your overall accuracy across last {ROLLING_WINDOW} signals: {win_rate_pct}%.")
         if accuracy < 0.4:
             lines.append("You have been underperforming recently. Consider reducing your confidence scores.")
         elif accuracy > 0.65:
@@ -304,10 +314,7 @@ class AgentMemory:
     # -------------------------------------------------------------------------
 
     async def _recalculate_weight(self, agent_id: str) -> float:
-        """
-        Computes rolling accuracy over last ROLLING_WINDOW resolved signals.
-        Used to set Nova's Bayesian aggregation weight for this agent.
-        """
+        """Recomputes rolling accuracy over last ROLLING_WINDOW resolved signals."""
         return await self.get_agent_accuracy(agent_id, last_n=ROLLING_WINDOW)
 
 

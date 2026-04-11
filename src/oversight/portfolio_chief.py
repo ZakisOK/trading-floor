@@ -22,6 +22,7 @@ import structlog
 from src.core.redis import get_redis
 from src.learning.agent_memory import agent_memory
 from src.learning.calibration import run_all_calibrations, should_run_calibration
+from src.signals.regime_detector import RegimeLabel, regime_detector
 from src.streams.producer import produce, produce_audit
 from src.streams import topology
 
@@ -46,37 +47,31 @@ ASSET_CLASS_MAP = {
 # All research agents — used for calibration sweeps
 RESEARCH_AGENTS = ["marcus", "vera", "rex", "xrp_analyst", "polymarket_scout"]
 
-RegimeLabel = Literal["TRENDING", "RANGING", "VOLATILE"]
-
 
 # ---------------------------------------------------------------------------
-# Regime detection
+# Regime detection — delegates to RegimeDetector (src/signals/regime_detector.py)
 # ---------------------------------------------------------------------------
-
-def _classify_regime(atr_current: float, atr_avg: float, price_change_pct: float) -> RegimeLabel:
-    """
-    Simple regime classifier:
-      - VOLATILE: current ATR > 1.5× the 50-period ATR average
-      - TRENDING: current ATR is normal AND absolute price move > 2% over 24h
-      - RANGING: everything else
-    """
-    if atr_avg <= 0:
-        return "VOLATILE"
-    ratio = atr_current / atr_avg
-    if ratio > 1.5:
-        return "VOLATILE"
-    if abs(price_change_pct) > 2.0:
-        return "TRENDING"
-    return "RANGING"
-
 
 async def _detect_market_regime() -> RegimeLabel:
     """
-    Read BTC ATR metrics from Redis (written by the data feed layer).
-    Falls back to RANGING if no data available.
+    Read BTC ATR metrics from Redis (written by the data feed layer) and
+    classify the current regime using RegimeDetector.
+
+    Falls back to RANGING if no price data is available.
+    Also writes to legacy key 'market:regime' (no symbol suffix) so existing
+    consumers reading the old key continue to work during the migration.
     """
     redis = get_redis()
     try:
+        # Prefer cached symbol-specific regime written by RegimeDetector
+        cached = await redis.get("market:regime:BTC/USDT")
+        if cached in ("TRENDING", "RANGING", "VOLATILE"):
+            # Refresh the legacy key so old consumers stay in sync
+            await redis.set("market:regime", cached, ex=OVERSIGHT_INTERVAL_SECONDS * 2)
+            logger.info("regime_detected", regime=cached, source="symbol_cache")
+            return cached  # type: ignore[return-value]
+
+        # Fall back: build a price list from the atr keys and classify directly
         atr_current_raw = await redis.get("market:BTC/USDT:atr20")
         atr_avg_raw = await redis.get("market:BTC/USDT:atr50_avg")
         change_raw = await redis.get("market:BTC/USDT:change24h_pct")
@@ -85,15 +80,20 @@ async def _detect_market_regime() -> RegimeLabel:
         atr_avg = float(atr_avg_raw or 0)
         change_pct = float(change_raw or 0)
 
+        # Use RegimeDetector's internal classifier with synthetic 2-price series
+        # that encodes the same information (avoids duplicating the threshold logic)
+        from src.signals.regime_detector import _classify_regime
         regime = _classify_regime(atr_current, atr_avg, change_pct)
+
     except Exception as e:
         logger.warning("regime_detection_failed", error=str(e))
         regime = "RANGING"
 
-    # Broadcast regime to Redis so all agents can read it
+    # Broadcast regime to Redis under both the legacy key and the symbol-specific key
     await redis.set("market:regime", regime, ex=OVERSIGHT_INTERVAL_SECONDS * 2)
-    logger.info("regime_detected", regime=regime)
-    return regime
+    await redis.set("market:regime:BTC/USDT", regime, ex=OVERSIGHT_INTERVAL_SECONDS * 2)
+    logger.info("regime_detected", regime=regime, source="atr_keys")
+    return regime  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +110,6 @@ async def _check_concentration() -> list[str]:
     flags: list[str] = []
 
     try:
-        # Positions are stored as hashes: position:{symbol}
         position_keys = await redis.keys("position:*")
         class_longs: dict[str, int] = defaultdict(int)
 
@@ -124,7 +123,6 @@ async def _check_concentration() -> list[str]:
             if qty <= 0 or side != "LONG":
                 continue
 
-            # Classify by asset prefix
             base = symbol.split("/")[0].upper()
             asset_class = ASSET_CLASS_MAP.get(base, "other")
             class_longs[asset_class] += 1
@@ -162,12 +160,10 @@ async def _detect_mistake_patterns() -> None:
     """
     redis = get_redis()
     try:
-        # Closed trade outcomes stored in stream:trade_outcomes
         raw_entries = await redis.xrevrange(topology.TRADE_OUTCOMES, count=20)
         if not raw_entries:
             return
 
-        # Group outcomes by agent_id in arrival order
         agent_streaks: dict[str, list[str]] = defaultdict(list)
         for _msg_id, fields in raw_entries:
             agent_id = fields.get("originating_agent_id", "")
@@ -176,7 +172,6 @@ async def _detect_mistake_patterns() -> None:
                 agent_streaks[agent_id].append(outcome)
 
         for agent_id, outcomes in agent_streaks.items():
-            # Count consecutive losses from the start (most recent = first)
             consecutive_losses = 0
             for o in outcomes:
                 if o == "LOSS":
@@ -211,13 +206,9 @@ async def _detect_mistake_patterns() -> None:
 # ---------------------------------------------------------------------------
 
 async def _write_daily_report() -> None:
-    """
-    Writes a daily summary to Redis at UTC midnight.
-    Reads from stream:trade_outcomes to compute stats.
-    """
+    """Writes a daily summary to Redis at UTC midnight."""
     redis = get_redis()
     try:
-        # Read last 1000 outcomes (today's trades)
         raw_entries = await redis.xrange(topology.TRADE_OUTCOMES, count=1000)
         if not raw_entries:
             logger.info("daily_report_no_trades")
@@ -246,7 +237,6 @@ async def _write_daily_report() -> None:
 
         win_rate = wins / total if total > 0 else 0.0
 
-        # Sharpe (simplified: mean/std of PnL, annualized if >10 trades)
         sharpe = None
         if len(pnl_values) >= 10:
             import statistics
@@ -254,7 +244,6 @@ async def _write_daily_report() -> None:
             std_pnl = statistics.stdev(pnl_values) if len(pnl_values) > 1 else 1e-9
             sharpe = round(avg_pnl / std_pnl * (252 ** 0.5), 2) if std_pnl > 0 else None
 
-        # Best/worst agent by PnL
         best_agent = max(agent_stats, key=lambda a: agent_stats[a]["pnl"], default="none")
         worst_agent = min(agent_stats, key=lambda a: agent_stats[a]["pnl"], default="none")
 
@@ -271,7 +260,7 @@ async def _write_daily_report() -> None:
         }
 
         date_key = f"report:daily:{datetime.now(UTC).strftime('%Y-%m-%d')}"
-        await redis.set(date_key, json.dumps(report), ex=60 * 60 * 24 * 30)  # keep 30 days
+        await redis.set(date_key, json.dumps(report), ex=60 * 60 * 24 * 30)
         await redis.set("report:daily:latest", json.dumps(report))
 
         logger.info(
@@ -317,7 +306,7 @@ async def run() -> None:
         try:
             now_utc = datetime.now(UTC)
 
-            # 1. Detect market regime and broadcast
+            # 1. Detect market regime and broadcast (via RegimeDetector + legacy key)
             regime = await _detect_market_regime()
 
             # 2. Cross-position concentration check

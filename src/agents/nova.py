@@ -2,13 +2,20 @@
 Nova — Synthesizer / Jury Foreperson (Desk 1 final node).
 
 Nova doesn't generate signals. She reads all signals from Marcus, Vera, Rex,
-XRP Analyst, and Polymarket Scout, then applies confidence-weighted Bayesian
-aggregation to produce a final conviction packet for Desk 2.
+XRP Analyst, Polymarket Scout, and CarryAgent, then applies confidence-weighted
+Bayesian aggregation to produce a final conviction packet for Desk 2.
+
+Phase 2 upgrade — Regime-weighted Bayesian aggregation:
+  agent_weight = accuracy IN THE CURRENT REGIME (last 30 signals)
+  Falls back to overall accuracy when <5 regime-specific trades exist.
+
+  "Marcus is 71% accurate in TRENDING but only 51% in VOLATILE."
+  Nova now gives Marcus 39% more weight during trending markets.
 
 Bayesian aggregation:
   final_confidence = Σ(agent_confidence_i × agent_weight_i) / Σ(agent_weight_i)
-  agent_weight_i   = rolling accuracy over last 50 trades (from AgentMemory)
-                     defaults to 0.5 (equal weight) when history is insufficient
+  agent_weight_i   = regime-specific accuracy over last 30 trades
+                     defaults to 0.5 (equal weight) when history insufficient
 
 Nova only passes to Desk 2 if consensus_strength is "strong" (≥0.7)
 or "moderate" (0.5–0.7). Weak consensus (<0.5) → no trade.
@@ -29,20 +36,20 @@ from src.core.redis import get_redis
 
 logger = structlog.get_logger()
 
-# Agents whose signals Nova aggregates (must match agent_id in BaseAgent subclasses)
-RESEARCH_AGENTS = ["marcus", "vera", "rex", "xrp_analyst", "polymarket_scout"]
+RESEARCH_AGENTS = ["marcus", "vera", "rex", "xrp_analyst", "polymarket_scout", "carry_agent"]
 
-# Conviction thresholds
 STRONG_THRESHOLD = 0.70
 MODERATE_THRESHOLD = 0.50
 
-# Default position sizing parameters (Desk 2 / Diana can override)
-DEFAULT_POSITION_SIZE_PCT = 0.02   # 2% of portfolio
-DEFAULT_STOP_LOSS_PCT = 0.04       # 4%
-DEFAULT_TAKE_PROFIT_PCT = 0.12     # 12%
+DEFAULT_POSITION_SIZE_PCT = 0.02
+DEFAULT_STOP_LOSS_PCT = 0.04
+DEFAULT_TAKE_PROFIT_PCT = 0.12
 
-# Conviction packet expires after this many minutes if Desk 2 doesn't act
 CONVICTION_EXPIRY_MINUTES = 30
+
+# Regime accuracy: use last 30 signals (not the default 50)
+# Shorter window = faster adaptation to current regime
+REGIME_ACCURACY_WINDOW = 30
 
 
 def _consensus_strength(confidence: float) -> str:
@@ -53,11 +60,28 @@ def _consensus_strength(confidence: float) -> str:
     return "weak"
 
 
+def _name_to_id(agent_name: str) -> str:
+    """Map display name → agent_id used in AgentMemory."""
+    mapping = {
+        "marcus": "marcus",
+        "vera": "vera",
+        "rex": "rex",
+        "xrp analyst": "xrp_analyst",
+        "xrp_analyst": "xrp_analyst",
+        "polymarket scout": "polymarket_scout",
+        "polymarket_scout": "polymarket_scout",
+        "carry": "carry_agent",
+        "carry_agent": "carry_agent",
+        "nova": "nova",
+        "diana": "diana",
+    }
+    return mapping.get(agent_name, agent_name)
+
+
 class NovaAgent(BaseAgent):
     """
-    Synthesizer — reads the accumulated signals state from Desk 1 agents
-    and applies Bayesian aggregation to produce a conviction packet.
-    Replaces Diana as the final node in the research pipeline.
+    Synthesizer — reads accumulated signals from Desk 1 agents and applies
+    regime-weighted Bayesian aggregation to produce a conviction packet.
     """
 
     def __init__(self) -> None:
@@ -69,7 +93,20 @@ class NovaAgent(BaseAgent):
         symbol = market.get("symbol", "UNKNOWN")
         regime: str = market.get("regime", "UNKNOWN")
 
-        # If no signals came in from the research pipeline, pass through unchanged
+        # Try to get a fresher regime from Redis if state has UNKNOWN
+        if regime == "UNKNOWN":
+            redis = get_redis()
+            try:
+                cached = await redis.get(f"market:regime:{symbol}")
+                if cached:
+                    regime = cached
+                else:
+                    cached_global = await redis.get("market:regime")
+                    if cached_global:
+                        regime = cached_global
+            except Exception:
+                pass
+
         if not signals:
             logger.warning("nova_no_signals", symbol=symbol)
             updated = dict(state)
@@ -78,24 +115,34 @@ class NovaAgent(BaseAgent):
             return AgentState(**updated)
 
         # -----------------------------------------------------------------
-        # Step 1: Fetch per-agent Bayesian weights from AgentMemory
+        # Step 1: Fetch per-agent REGIME-SPECIFIC Bayesian weights
         # -----------------------------------------------------------------
         agent_weights: dict[str, float] = {}
         for agent_id in RESEARCH_AGENTS:
-            agent_weights[agent_id] = await agent_memory.get_effective_weight(agent_id)
+            # Use regime-specific accuracy in current regime (last 30 trades)
+            weight = await agent_memory.get_agent_accuracy(
+                agent_id, regime=regime, last_n=REGIME_ACCURACY_WINDOW
+            )
+            agent_weights[agent_id] = weight
+
+        logger.debug(
+            "nova_regime_weights",
+            symbol=symbol,
+            regime=regime,
+            weights={k: round(v, 3) for k, v in agent_weights.items()},
+        )
 
         # -----------------------------------------------------------------
-        # Step 2: Weighted confidence aggregation
+        # Step 2: Regime-weighted confidence aggregation
         # -----------------------------------------------------------------
         weighted_confidence_sum = 0.0
         weight_sum = 0.0
-        direction_votes: dict[str, float] = {}  # direction → weighted votes
+        direction_votes: dict[str, float] = {}
         dissenting_agents: list[str] = []
         thesis_parts: list[str] = []
 
         for sig in signals:
             agent_name = sig.get("agent", "").lower()
-            # Map agent_name → agent_id (agents store name not id in signals)
             agent_id = _name_to_id(agent_name)
             weight = agent_weights.get(agent_id, 0.5)
 
@@ -105,7 +152,6 @@ class NovaAgent(BaseAgent):
 
             weighted_confidence_sum += conf * weight
             weight_sum += weight
-
             direction_votes[direction] = direction_votes.get(direction, 0.0) + weight
 
             if thesis:
@@ -116,17 +162,15 @@ class NovaAgent(BaseAgent):
         )
         final_confidence = round(min(max(final_confidence, 0.0), 1.0), 4)
 
-        # Determine consensus direction by highest weighted vote
         consensus_direction = max(direction_votes, key=direction_votes.get) if direction_votes else "NEUTRAL"
 
-        # Identify dissenting agents (those who voted differently than consensus)
         for sig in signals:
             if sig.get("direction") != consensus_direction:
                 dissenting_agents.append(_name_to_id(sig.get("agent", "").lower()))
 
         strength = _consensus_strength(final_confidence)
 
-        # Polymarket boost: check if polymarket_scout voted with consensus at high confidence
+        # Polymarket boost
         polymarket_boost = 0.0
         for sig in signals:
             if "polymarket" in sig.get("agent", "").lower():
@@ -162,7 +206,9 @@ class NovaAgent(BaseAgent):
             direction=consensus_direction,
             confidence=final_confidence,
             strength=strength,
+            regime=regime,
             dissenters=dissenting_agents,
+            weights={k: round(v, 3) for k, v in agent_weights.items()},
         )
 
         # -----------------------------------------------------------------
@@ -197,6 +243,7 @@ class NovaAgent(BaseAgent):
                 "take_profit_pct": str(DEFAULT_TAKE_PROFIT_PCT),
                 "expires_at": expires_at,
                 "regime": regime,
+                "regime_weights": json.dumps({k: round(v, 3) for k, v in agent_weights.items()}),
             },
             redis=redis,
         )
@@ -207,30 +254,15 @@ class NovaAgent(BaseAgent):
             "direction": consensus_direction,
             "confidence": final_confidence,
             "strength": strength,
+            "regime": regime,
         }, redis=redis)
 
-        # Update AgentState so callers can see Nova's decision
         updated = dict(state)
         updated["final_decision"] = consensus_direction
         updated["risk_approved"] = True
         updated["confidence"] = final_confidence
         updated["reasoning"] = (
-            f"Nova ({strength} consensus, conf={final_confidence:.2f}): {consensus_direction}"
+            f"Nova ({strength} consensus, conf={final_confidence:.2f}, "
+            f"regime={regime}): {consensus_direction}"
         )
         return AgentState(**updated)
-
-
-def _name_to_id(agent_name: str) -> str:
-    """Map display name → agent_id used in AgentMemory."""
-    mapping = {
-        "marcus": "marcus",
-        "vera": "vera",
-        "rex": "rex",
-        "xrp analyst": "xrp_analyst",
-        "xrp_analyst": "xrp_analyst",
-        "polymarket scout": "polymarket_scout",
-        "polymarket_scout": "polymarket_scout",
-        "nova": "nova",
-        "diana": "diana",
-    }
-    return mapping.get(agent_name, agent_name)
