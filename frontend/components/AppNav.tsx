@@ -37,6 +37,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     group: "System",
     items: [
+      { href: "/mobile",      label: "Mobile",        icon: "📱" },
       { href: "/settings",    label: "Settings",      icon: "⚙️" },
     ],
   },
