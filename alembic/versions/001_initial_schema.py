@@ -42,7 +42,7 @@ def upgrade() -> None:
             server_default=sa.func.now(),
             nullable=False,
         ),
-        sa.PrimaryKeyConstraint("id"),
+        sa.PrimaryKeyConstraint("id", "ts"),
         sa.UniqueConstraint("symbol", "exchange", "timeframe", "ts", name="uq_ohlcv_bar"),
     )
     op.create_index("ix_ohlcv_symbol", "ohlcv", ["symbol"])
