@@ -432,7 +432,7 @@ class OptionsFlowFeed:
         We extract what we can; missing fields default to 0.
         """
         combined = f"{title} {description}".upper()
-        call_put = "CALL" if "CALL" in combined else ("PUT" if "PUT" in combined)
+        call_put = "CALL" if "CALL" in combined else ("PUT" if "PUT" in combined else None)
 
         # Very rough premium parse: look for dollar amounts like $1.2M or $500K
         premium = 0.0
