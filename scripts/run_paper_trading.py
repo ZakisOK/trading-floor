@@ -57,7 +57,7 @@ async def _get_market_price(symbol: str) -> float:
 
 
 async def run_cycle(symbol: str) -> None:
-    from src.agents.graph import run_trading_cycle
+    from src.agents.sage import run_trading_cycle
     price = await _get_market_price(symbol)
     market_data = {"close": price, "volume": 1000.0}
     result = await run_trading_cycle(symbol, market_data)
@@ -131,6 +131,10 @@ async def macro_refresh_loop() -> None:
     from src.agents.macro_analyst import MacroAnalystAgent
     _macro = MacroAnalystAgent()
     logger.info("macro_refresh_loop_started", interval_s=MACRO_REFRESH_INTERVAL)
+
+    if not hasattr(_macro, "refresh_cache"):
+        logger.warning("macro_refresh_skipped", reason="MacroAnalystAgent.refresh_cache() not implemented")
+        return
 
     while not _shutdown:
         try:

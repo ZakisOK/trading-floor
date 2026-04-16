@@ -11,7 +11,7 @@ from src.data.models.market import OHLCV
 from src.data.schemas.market import OHLCVResponse, SymbolInfo
 from src.data.feeds.polymarket_feed import PolymarketFeed
 
-router = APIRouter(prefix="/market", tags=["market"])
+router = APIRouter(prefix="/api/market", tags=["market"])
 
 _poly_feed = PolymarketFeed()
 

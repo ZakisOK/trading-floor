@@ -27,6 +27,21 @@ async def _fetch_price(symbol: str) -> float | None:
         return None
 
 
+@router.get("/portfolio")
+async def get_portfolio() -> dict:
+    """Portfolio summary — cash, positions value, total, daily P&L."""
+    total = paper_broker.get_portfolio_value()
+    cash = paper_broker._cash
+    return {
+        "cash": cash,
+        "positions_value": total - cash,
+        "total": total,
+        "daily_pnl": paper_broker._daily_pnl,
+        "trade_count": paper_broker._trade_count,
+        "win_rate": getattr(paper_broker, "_win_rate", 0.0),
+    }
+
+
 @router.get("/positions")
 async def get_live_positions() -> list[dict]:
     """
