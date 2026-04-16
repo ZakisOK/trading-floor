@@ -72,7 +72,7 @@ export function AppNav() {
             {group.items.map(({ href, label, icon, badge }) => {
               const isActive = pathname === href || (href !== "/" && pathname.startsWith(href));
               return (
-                <Link key={href} href={href} style={{
+                <Link key={href} href={href as never} style={{
                   display: "flex", alignItems: "center", gap: 10, padding: "8px 18px",
                   textDecoration: "none", fontSize: 13, fontWeight: isActive ? 600 : 400,
                   color: isActive ? "var(--text-primary)" : "var(--text-secondary)",
