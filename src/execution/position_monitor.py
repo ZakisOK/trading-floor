@@ -102,6 +102,7 @@ async def _exit_position(pos: dict, current_price: float, reason: str) -> None:
     )
 
     pnl = (current_price - avg_price) * quantity
+    pnl_pct = (current_price - avg_price) / avg_price if avg_price else 0.0
 
     await produce(topology.PNL, {
         "symbol": symbol, "reason": reason,
@@ -114,6 +115,40 @@ async def _exit_position(pos: dict, current_price: float, reason: str) -> None:
         "symbol": symbol, "reason": reason,
         "pnl": round(pnl, 6), "order_id": order.order_id,
     }, redis=redis)
+
+    # Update ELO for agents that contributed to the directional call
+    await _update_agent_elos(symbol, pnl_pct, redis)
+
+
+_ELO_K = 16  # Per-trade rating delta
+_ELO_DRAW_PCT = 0.001  # <0.1% is a draw
+
+
+async def _update_agent_elos(symbol: str, pnl_pct: float, redis) -> None:
+    """Adjust ELO on Redis agent:state:* for each contributor to the entry."""
+    key = f"paper:position:{symbol}:contributors"
+    contributors = list(await redis.smembers(key))
+    if not contributors:
+        return
+    if pnl_pct > _ELO_DRAW_PCT:
+        delta = _ELO_K
+        outcome = "win"
+    elif pnl_pct < -_ELO_DRAW_PCT:
+        delta = -_ELO_K
+        outcome = "loss"
+    else:
+        delta = 0
+        outcome = "draw"
+    for agent_id in contributors:
+        state_key = f"agent:state:{agent_id}"
+        raw = await redis.hget(state_key, "elo")
+        current = float(raw) if raw else 1200.0
+        new_elo = round(current + delta, 2)
+        await redis.hset(state_key, "elo", str(new_elo))
+        await redis.hincrby(state_key, f"trades_{outcome}", 1)
+    await redis.delete(key)
+    logger.info("elo_updated", symbol=symbol, outcome=outcome,
+                delta=delta, contributors=list(contributors))
 
 
 async def _process_position(pos: dict) -> None:

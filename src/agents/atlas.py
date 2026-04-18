@@ -44,6 +44,22 @@ class AtlasAgent(BaseAgent):
                         f"{side} {order.quantity:.4f} {symbol} "
                         f"@ ${order.filled_price:.4f} ({order.status})"
                     )
+                    # Record contributing agents (those whose directional call matched).
+                    # Used later for ELO updates when the position closes.
+                    if order.status == "FILLED" and side == "BUY":
+                        redis = get_redis()
+                        contributors = [
+                            s.get("agent", "").lower()
+                            for s in state.get("signals", [])
+                            if s.get("direction") == direction
+                            and float(s.get("confidence") or 0) >= 0.55
+                            and s.get("agent")
+                        ]
+                        if contributors:
+                            await redis.sadd(
+                                f"paper:position:{symbol}:contributors",
+                                *contributors,
+                            )
                     logger.info(
                         "atlas_order_filled", symbol=symbol, side=side,
                         price=order.filled_price, qty=order.quantity,

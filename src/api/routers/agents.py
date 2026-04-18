@@ -31,12 +31,20 @@ async def list_agents() -> list[dict]:
     for meta in _AGENT_META:
         state_key = f"agent:state:{meta['id']}"
         raw = await redis.hgetall(state_key)
+        wins = int(raw.get("trades_win", 0) or 0)
+        losses = int(raw.get("trades_loss", 0) or 0)
+        draws = int(raw.get("trades_draw", 0) or 0)
+        total = wins + losses + draws
         agents.append({
             **meta,
             "status": raw.get("status", "idle"),
             "last_heartbeat": raw.get("last_heartbeat", None),
             "elo": float(raw.get("elo", 1200)),
             "current_task": raw.get("current_task", None),
+            "trades_win": wins,
+            "trades_loss": losses,
+            "trades_draw": draws,
+            "win_rate": wins / total if total else None,
         })
     return agents
 

@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
+
 import structlog
 from anthropic import AsyncAnthropic
 
 from src.agents.base import BaseAgent, AgentState
 from src.core.config import settings
+from src.core.redis import get_redis
 
 logger = structlog.get_logger()
 
@@ -38,6 +41,22 @@ class RexAgent(BaseAgent):
             direction = data.get("direction", "NEUTRAL")
             confidence = float(data.get("confidence", 0.5))
             thesis = data.get("thesis", "Neutral sentiment")
+            score = float(data.get("sentiment_score", 0.0))
+            label = "BULLISH" if score > 0.2 else "BEARISH" if score < -0.2 else "NEUTRAL"
+
+            # Publish sentiment to Redis so /api/market/sentiment/{symbol} has data
+            safe_sym = symbol.replace("/", "_").replace("=", "_")
+            payload = {
+                "score": score,
+                "label": label,
+                "confidence": confidence,
+                "headlines": [],
+                "thesis": thesis,
+                "ts": datetime.now(UTC).isoformat(),
+            }
+            redis = get_redis()
+            await redis.setex(f"sentiment:{safe_sym}", 3600, json.dumps(payload))
+
             await self.emit_signal(symbol, direction, confidence, thesis, "sentiment")
             updated = dict(state)
             updated["signals"] = list(state.get("signals", [])) + [
