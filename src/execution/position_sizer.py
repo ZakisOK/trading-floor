@@ -109,15 +109,20 @@ class VolatilityPositionSizer:
                     if raw:
                         return float(raw)
 
-            # Fallback: try ccxt
+            # Fallback: try Coinbase via ccxt
             try:
                 import ccxt.async_support as ccxt  # type: ignore[import]
-                exchange = ccxt.binance({"enableRateLimit": True})
-                ticker = await exchange.fetch_ticker(symbol.replace("-USD", "/USDT"))
-                await exchange.close()
-                quote_vol = ticker.get("quoteVolume")
-                if quote_vol:
-                    return float(quote_vol)
+                from src.data.feeds.price_source import to_coinbase_symbol
+                cb_sym = to_coinbase_symbol(symbol.replace("-USD", "/USDT"))
+                if cb_sym:
+                    exchange = ccxt.coinbase({"enableRateLimit": True})
+                    try:
+                        ticker = await exchange.fetch_ticker(cb_sym)
+                    finally:
+                        await exchange.close()
+                    quote_vol = ticker.get("quoteVolume")
+                    if quote_vol:
+                        return float(quote_vol)
             except Exception:
                 pass
 

@@ -26,21 +26,7 @@ DEFAULT_STOP_PCT = 0.03       # 3% default stop if position has none
 DEFAULT_TARGET_PCT = 0.06     # 6% default target if position has none
 
 
-async def _fetch_live_price(symbol: str) -> float | None:
-    """Fetch live mid price via CCXT REST (binance ticker)."""
-    try:
-        import ccxt.async_support as ccxt  # type: ignore[import]
-        exchange = ccxt.binance({"enableRateLimit": True})
-        ticker = await exchange.fetch_ticker(symbol)
-        await exchange.close()
-        # Prefer last traded price; fall back to mid of bid/ask
-        price = ticker.get("last") or (
-            (ticker.get("bid", 0) + ticker.get("ask", 0)) / 2
-        )
-        return float(price) if price else None
-    except Exception as e:
-        logger.error("price_fetch_failed", symbol=symbol, error=str(e))
-        return None
+from src.data.feeds.price_source import fetch_price as _fetch_live_price  # noqa: E402
 
 
 async def _check_position(pos: dict, current_price: float) -> str | None:

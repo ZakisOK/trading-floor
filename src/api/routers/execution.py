@@ -6,25 +6,11 @@ from fastapi import APIRouter
 
 from src.execution.broker import paper_broker
 from src.core.redis import get_redis
+from src.data.feeds.price_source import fetch_price as _fetch_price
 
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/api/execution", tags=["execution"])
-
-
-async def _fetch_price(symbol: str) -> float | None:
-    try:
-        import ccxt.async_support as ccxt  # type: ignore[import]
-        exchange = ccxt.binance({"enableRateLimit": True})
-        ticker = await exchange.fetch_ticker(symbol)
-        await exchange.close()
-        price = ticker.get("last") or (
-            (ticker.get("bid", 0) + ticker.get("ask", 0)) / 2
-        )
-        return float(price) if price else None
-    except Exception as e:
-        logger.warning("execution_price_fetch_failed", symbol=symbol, error=str(e))
-        return None
 
 
 @router.get("/portfolio")

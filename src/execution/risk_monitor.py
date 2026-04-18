@@ -30,27 +30,16 @@ ALERTS_STREAM = "stream:alerts"
 
 
 async def _fetch_prices_for_positions() -> dict[str, float]:
-    """REST-fetch current prices for every open position."""
+    """REST-fetch current prices for every open position via Coinbase."""
     positions = await paper_broker.get_positions()
     if not positions:
         return {}
+    from src.data.feeds.price_source import fetch_price
     prices: dict[str, float] = {}
-    try:
-        import ccxt.async_support as ccxt  # type: ignore[import]
-        exchange = ccxt.binance({"enableRateLimit": True})
-        for pos in positions:
-            sym = pos["symbol"]
-            try:
-                ticker = await exchange.fetch_ticker(sym)
-                prices[sym] = float(ticker.get("last") or pos["avg_price"])
-            except Exception as e:
-                logger.warning("risk_price_fetch_failed", symbol=sym, error=str(e))
-                prices[sym] = pos["avg_price"]
-        await exchange.close()
-    except Exception as e:
-        logger.error("risk_exchange_init_failed", error=str(e))
-        for pos in positions:
-            prices[pos["symbol"]] = pos["avg_price"]
+    for pos in positions:
+        sym = pos["symbol"]
+        price = await fetch_price(sym)
+        prices[sym] = price if price else pos["avg_price"]
     return prices
 
 

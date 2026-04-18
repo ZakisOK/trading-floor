@@ -148,16 +148,16 @@ async def check_postgres() -> None:
 # ── 5. Exchange (CCXT public endpoint) ───────────────────────────────────────
 
 async def check_exchange() -> None:
-    print("\n[5] Exchange connectivity (CCXT / Binance public)")
+    print("\n[5] Exchange connectivity (CCXT / Coinbase public)")
     try:
         import ccxt.async_support as ccxt  # type: ignore[import]
-        exchange = ccxt.binance({"enableRateLimit": True})
-        ticker = await asyncio.wait_for(exchange.fetch_ticker("BTC/USDT"), timeout=10)
+        exchange = ccxt.coinbase({"enableRateLimit": True})
+        ticker = await asyncio.wait_for(exchange.fetch_ticker("BTC/USD"), timeout=10)
         await exchange.close()
         price = ticker.get("last", 0)
-        ok("Binance ticker (BTC/USDT)", f"last=${price:,.0f}")
+        ok("Coinbase ticker (BTC/USD)", f"last=${price:,.0f}")
     except Exception as e:
-        fail("CCXT / Binance public", str(e)[:80])
+        fail("CCXT / Coinbase public", str(e)[:80])
 
 
 # ── 6. XRPL RPC ──────────────────────────────────────────────────────────────

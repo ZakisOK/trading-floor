@@ -39,21 +39,21 @@ def _handle_signal(signum, frame):  # type: ignore[type-arg]
 
 
 async def _get_market_price(symbol: str) -> float:
-    """Try to get a live price; fall back to a placeholder."""
+    """Try to get a live price from Coinbase; fall back to a placeholder."""
     try:
-        import ccxt.async_support as ccxt  # type: ignore[import]
-        exchange = ccxt.binance()
-        ticker = await exchange.fetch_ticker(symbol)
-        await exchange.close()
-        return float(ticker["last"])
+        from src.data.feeds.price_source import fetch_price
+        price = await fetch_price(symbol)
+        if price:
+            return price
     except Exception:
-        defaults = {
-            "XRP/USDT": 0.60,
-            "BTC/USDT": 65000.0,
-            "ETH/USDT": 3200.0,
-            "SOL/USDT": 145.0,
-        }
-        return defaults.get(symbol, 100.0)
+        pass
+    defaults = {
+        "XRP/USDT": 0.60,
+        "BTC/USDT": 65000.0,
+        "ETH/USDT": 3200.0,
+        "SOL/USDT": 145.0,
+    }
+    return defaults.get(symbol, 100.0)
 
 
 async def run_cycle(symbol: str) -> None:
