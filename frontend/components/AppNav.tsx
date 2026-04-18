@@ -21,14 +21,15 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/market",       label: "Crypto",        icon: "💎" },
       { href: "/commodities",  label: "Commodities",   icon: "🛢", badge: "new" },
-      { href: "/backtest",     label: "Backtesting",   icon: "🔬" },
+      { href: "/backtest/ensemble", label: "Ensemble Test", icon: "🧪", badge: "new" },
+      { href: "/backtest",     label: "Indicator Lab", icon: "🔬" },
     ],
   },
   {
     group: "Intelligence",
     items: [
       { href: "/agents",      label: "Agents",        icon: "🤖" },
-      { href: "/copy-trade",  label: "Copy Trade",    icon: "📋", badge: "new" },
+      { href: "/copy-trade",  label: "Signal Consensus", icon: "📊" },
       { href: "/floor",       label: "Trading Floor", icon: "🏢" },
       { href: "/risk",        label: "Risk",          icon: "🛡" },
       { href: "/execution",   label: "Execution",     icon: "⚡" },
