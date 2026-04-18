@@ -59,13 +59,13 @@ def build_trading_graph():  # type: ignore[return]
     if not _LANGGRAPH_AVAILABLE:
         return None
     graph = StateGraph(AgentState)
-    graph.add_node("marcus", marcus.analyze)
-    graph.add_node("vera", vera.analyze)
-    graph.add_node("rex", rex.analyze)
-    graph.add_node("xrp_analyst", xrp_analyst.analyze)
-    graph.add_node("polymarket_scout", polymarket_scout.analyze)
-    graph.add_node("diana", diana.analyze)
-    graph.add_node("atlas", atlas.analyze)
+    graph.add_node("marcus", marcus.analyze_with_heartbeat)
+    graph.add_node("vera", vera.analyze_with_heartbeat)
+    graph.add_node("rex", rex.analyze_with_heartbeat)
+    graph.add_node("xrp_analyst", xrp_analyst.analyze_with_heartbeat)
+    graph.add_node("polymarket_scout", polymarket_scout.analyze_with_heartbeat)
+    graph.add_node("diana", diana.analyze_with_heartbeat)
+    graph.add_node("atlas", atlas.analyze_with_heartbeat)
 
     graph.set_entry_point("marcus")
     graph.add_edge("marcus", "vera")
@@ -109,7 +109,7 @@ async def run_trading_cycle(symbol: str, market_data: dict) -> AgentState:
         xrp_agents = [xrp_analyst] if "XRP" in sym else []
         tail_agents = [polymarket_scout, diana, atlas]
         for agent in base_agents + xrp_agents + tail_agents:
-            state = await agent.analyze(state)
+            state = await agent.analyze_with_heartbeat(state)
         return state
 
     result: AgentState = await trading_graph.ainvoke(initial)
