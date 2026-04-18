@@ -121,8 +121,13 @@ export default function FloorPage() {
     <div style={{ minHeight: "100vh", background: "var(--bg-void)", color: "var(--text-primary)", padding: "32px", fontFamily: "var(--font-sans)" }}>
       <style>{`@keyframes bubbleFadeIn{from{opacity:0;transform:translateX(-50%) translateY(6px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}`}</style>
       <div style={{ maxWidth: 1200, margin: "0 auto" }}>
-        <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 4 }}>Trading Floor</h1>
-        <p style={{ color: "var(--text-secondary)", marginBottom: 28 }}>Isometric view — click any desk for details</p>
+        <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>Trading Floor</h1>
+        <p style={{ color: "var(--text-secondary)", fontSize: 13, marginBottom: 6, maxWidth: 700 }}>
+          Spatial view of the desk. Each tile is an agent — when it lights up, that agent is actively analyzing a symbol. Speech bubbles show the most recent signal. Click any desk for details.
+        </p>
+        <p style={{ color: "var(--text-tertiary)", fontSize: 12, marginBottom: 24, maxWidth: 700 }}>
+          This is the same data as Mission Control's Agent Cycle panel, rendered as a floor plan for at-a-glance awareness.
+        </p>
 
         <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
           {/* Floor grid */}

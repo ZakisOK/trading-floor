@@ -259,8 +259,18 @@ export default function BacktestPage() {
   return (
     <div style={{ minHeight: "100vh", background: "var(--bg-void)", color: "var(--text-primary)", padding: "32px", fontFamily: "var(--font-sans)" }}>
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-        <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 4 }}>Backtesting Studio</h1>
-        <p style={{ color: "var(--text-secondary)", marginBottom: 32 }}>Test strategies against historical data</p>
+        <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>Indicator Lab</h1>
+        <p style={{ color: "var(--text-secondary)", marginBottom: 12, fontSize: 13 }}>
+          Test <strong>classical indicator strategies</strong> (SMA crossover, RSI mean reversion) against historical OHLCV. This is the <strong>research playground</strong> — not the live agent ensemble.
+        </p>
+        <div style={{
+          background: "rgba(94,106,210,0.08)", border: "1px solid rgba(94,106,210,0.3)",
+          borderRadius: 6, padding: "10px 14px", fontSize: 12, color: "var(--text-secondary)",
+          marginBottom: 24,
+        }}>
+          <strong style={{ color: "var(--accent-info)" }}>What to use this for:</strong> sanity-checking whether a basic signal works on this symbol before you ask the agents to consider it. If SMA 10/20 loses money on BTC hourly, the crossover isn't a good baseline for Vera to lean on.<br />
+          <strong style={{ color: "var(--accent-info)" }}>Want to test the agent ensemble instead?</strong> Go to <a href="/backtest/ensemble" style={{ color: "var(--accent-info)" }}>Ensemble Test</a> — it replays the full Marcus+Vera+Rex+Diana+Atlas pipeline through historical bars.
+        </div>
 
         {/* Config Panel */}
         <div className="glass-panel" style={{ padding: 24, marginBottom: 24 }}>

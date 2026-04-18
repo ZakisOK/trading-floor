@@ -134,14 +134,17 @@ export default function AgentsPage() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 32 }}>
           <div>
             <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 4 }}>Agent Floor</h1>
-            <p style={{ color: "var(--text-secondary)" }}>10 autonomous trading agents — live status</p>
+            <p style={{ color: "var(--text-secondary)", marginBottom: 8 }}>10 autonomous trading agents — live status + ELO</p>
+            <p style={{ color: "var(--text-tertiary)", fontSize: 12, maxWidth: 700, margin: 0 }}>
+              The paper-trading loop already fires cycles automatically (XRP every 2 min, others every 5 min). Use <strong>Run Full Cycle</strong> below to trigger one cycle on-demand on the default symbol — useful for testing prompt changes without waiting for the scheduler. Each agent card shows their live status, current task, ELO, and win/loss record.
+            </p>
           </div>
           <button onClick={runFullCycle} disabled={running === "cycle"} style={{
             background: running === "cycle" ? "var(--bg-surface-3)" : "var(--accent-primary)",
             color: "#fff", border: "none", borderRadius: "var(--radius-sm)",
             padding: "10px 24px", fontSize: 14, fontWeight: 600, cursor: running === "cycle" ? "not-allowed" : "pointer",
           }}>
-            {running === "cycle" ? "Running Cycle…" : "Run Full Cycle"}
+            {running === "cycle" ? "Running Cycle…" : "Trigger Cycle Now"}
           </button>
         </div>
 

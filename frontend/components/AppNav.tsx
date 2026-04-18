@@ -10,10 +10,8 @@ const NAV_GROUPS: NavGroup[] = [
     group: "The Firm",
     items: [
       { href: "/",           label: "Mission Control", icon: "📊" },
-      { href: "/firm",       label: "Overview",        icon: "🏛" },
       { href: "/positions",  label: "Positions",       icon: "📈" },
       { href: "/signals",    label: "Signals",         icon: "📡" },
-      { href: "/polymarket", label: "Polymarket",      icon: "🎯" },
     ],
   },
   {
