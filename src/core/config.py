@@ -70,11 +70,15 @@ class Settings(BaseSettings):
     @field_validator("allowed_origins", mode="before")
     @classmethod
     def _split_allowed_origins(cls, v: object) -> object:
-        """Accept comma-separated strings in addition to JSON arrays."""
+        """Accept comma-separated strings AND JSON arrays (env gives us a string)."""
         if isinstance(v, str):
             s = v.strip()
             if s.startswith("["):
-                return v
+                import json
+                try:
+                    return json.loads(s)
+                except (json.JSONDecodeError, ValueError):
+                    pass
             return [origin.strip() for origin in s.split(",") if origin.strip()]
         return v
 
