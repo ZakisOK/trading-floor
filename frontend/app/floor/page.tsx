@@ -1,185 +1,384 @@
 "use client";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const WS_URL = API.replace(/^http/, "ws") + "/ws/stream";
 
-const AGENTS = [
-  { id: "marcus", name: "Marcus", role: "Fundamentals", color: "#9677D0", x: 0, y: 0 },
-  { id: "vera",   name: "Vera",   role: "Technical",    color: "#643588", x: 1, y: 0 },
-  { id: "rex",    name: "Rex",    role: "Sentiment",    color: "#9677D0", x: 2, y: 0 },
-  { id: "diana",  name: "Diana",  role: "Risk",         color: "#ED6F91", x: 0, y: 1 },
-  { id: "atlas",  name: "Atlas",  role: "Execution",    color: "#3EB6B0", x: 1, y: 1 },
-  { id: "nova",   name: "Nova",   role: "Options",      color: "#26888A", x: 2, y: 1 },
-  { id: "bull",   name: "Bull",   role: "Research↑",   color: "#E3A535", x: 0, y: 2 },
-  { id: "bear",   name: "Bear",   role: "Research↓",   color: "#B87D1E", x: 1, y: 2 },
-  { id: "sage",   name: "Sage",   role: "Supervisor",   color: "#F89318", x: 2, y: 2 },
-  { id: "scout",  name: "Scout",  role: "Opportunities",color: "#38BDF8", x: 3, y: 1 },
-];
+type AgentId =
+  | "marcus" | "vera" | "rex" | "xrp_analyst" | "polymarket_scout"
+  | "diana" | "nova" | "atlas" | "bull" | "bear" | "sage" | "scout";
 
-interface Bubble { agentId: string; text: string; dir: string; id: number }
-interface Signal { agent_id?: string; direction?: string; thesis?: string; _ts?: string }
-
-// Isometric desk using SVG polygons
-function IsoDesk({ color, active }: { color: string; active: boolean }) {
-  const c = active ? color : "#2a2f3a";
-  const glow = active ? color : "transparent";
-  return (
-    <svg width="90" height="60" viewBox="0 0 90 60" style={{ filter: active ? `drop-shadow(0 0 6px ${glow})` : "none", transition: "filter 0.4s" }}>
-      {/* top face */}
-      <polygon points="45,2 88,24 45,46 2,24" fill={c} opacity="0.9" />
-      {/* left face */}
-      <polygon points="2,24 45,46 45,58 2,36" fill={c} opacity="0.5" />
-      {/* right face */}
-      <polygon points="88,24 45,46 45,58 88,36" fill={c} opacity="0.65" />
-      {/* screen */}
-      <polygon points="35,12 55,22 55,32 35,22" fill="#0A0D13" opacity="0.8" />
-      <polygon points="36,13 54,22 54,31 36,22" fill={active ? color : "#1a1f2a"} opacity="0.6" />
-    </svg>
-  );
+interface AgentDef {
+  id: AgentId;
+  name: string;
+  role: string;
+  desk: "research" | "execution" | "oversight";
+  color: string;
+  x: number; // grid col (0..5)
+  y: number; // grid row (0..3)
 }
 
-function AgentDesk({ agent, bubble, active, onClick }: {
-  agent: typeof AGENTS[0]; bubble: Bubble | null; active: boolean; onClick: () => void
-}) {
-  return (
-    <div onClick={onClick} style={{ position: "relative", cursor: "pointer", userSelect: "none", display: "flex", flexDirection: "column", alignItems: "center" }}>
-      {/* Speech bubble */}
-      {bubble && (
-        <div style={{
-          position: "absolute", bottom: "100%", left: "50%", transform: "translateX(-50%)",
-          background: "var(--bg-surface-2)", border: `1px solid ${agent.color}`,
-          borderRadius: 8, padding: "6px 10px", fontSize: 11, maxWidth: 160, textAlign: "center",
-          color: "var(--text-primary)", whiteSpace: "normal", zIndex: 10, marginBottom: 8,
-          animation: "bubbleFadeIn 0.3s ease",
-        }}>
-          <span style={{ color: bubble.dir === "LONG" ? "var(--accent-profit)" : bubble.dir === "SHORT" ? "var(--accent-loss)" : "var(--text-secondary)", fontWeight: 700, marginRight: 4 }}>{bubble.dir}</span>
-          {bubble.text.slice(0, 60)}{bubble.text.length > 60 ? "…" : ""}
-        </div>
-      )}
-      <IsoDesk color={agent.color} active={active} />
-      {/* Agent figure */}
-      <div style={{ position: "absolute", top: 4, left: "50%", transform: "translateX(-50%)", display: "flex", flexDirection: "column", alignItems: "center" }}>
-        <div style={{ width: 14, height: 14, borderRadius: "50%", background: agent.color, border: "2px solid var(--bg-void)" }} />
-        <div style={{ width: 12, height: 16, background: agent.color, opacity: 0.7, borderRadius: "3px 3px 0 0", marginTop: 1 }} />
-      </div>
-      {/* Status dot */}
-      <div style={{ position: "absolute", top: 2, right: 2, width: 7, height: 7, borderRadius: "50%", background: active ? "var(--status-normal)" : "var(--status-off)", boxShadow: active ? "0 0 4px var(--status-normal)" : "none" }} />
-      {/* Label */}
-      <div style={{ textAlign: "center", marginTop: 6 }}>
-        <div style={{ fontWeight: 700, fontSize: 12, color: agent.color }}>{agent.name}</div>
-        <div style={{ fontSize: 10, color: "var(--text-tertiary)" }}>{agent.role}</div>
-      </div>
-    </div>
-  );
+// Layout: 3 desks as visual zones, agents placed within
+const AGENTS: AgentDef[] = [
+  // Desk 1 — Alpha Research (top row)
+  { id: "marcus", name: "Marcus", role: "Fundamentals", desk: "research", color: "#9677D0", x: 0, y: 0 },
+  { id: "vera", name: "Vera", role: "Technical", desk: "research", color: "#643588", x: 1, y: 0 },
+  { id: "rex", name: "Rex", role: "Sentiment", desk: "research", color: "#c084fc", x: 2, y: 0 },
+  { id: "xrp_analyst", name: "XRP Analyst", role: "Symbol Specialist", desk: "research", color: "#a855f7", x: 3, y: 0 },
+  { id: "polymarket_scout", name: "Polymarket", role: "Prediction", desk: "research", color: "#7c3aed", x: 4, y: 0 },
+  { id: "nova", name: "Nova", role: "Synthesizer", desk: "research", color: "#3EB6B0", x: 5, y: 0 },
+
+  // Desk 2 — Trade Execution (middle row)
+  { id: "diana", name: "Diana", role: "Risk Check", desk: "execution", color: "#ED6F91", x: 2, y: 1 },
+  { id: "atlas", name: "Atlas", role: "Execution", desk: "execution", color: "#22C55E", x: 3, y: 1 },
+
+  // Desk 3 — Portfolio Oversight (bottom row)
+  { id: "sage", name: "Sage", role: "Supervisor", desk: "oversight", color: "#F89318", x: 1, y: 2 },
+  { id: "scout", name: "Scout", role: "Opportunities", desk: "oversight", color: "#38BDF8", x: 3, y: 2 },
+  { id: "bull", name: "Bull", role: "Bull Case", desk: "oversight", color: "#E3A535", x: 0, y: 2 },
+  { id: "bear", name: "Bear", role: "Bear Case", desk: "oversight", color: "#B87D1E", x: 4, y: 2 },
+];
+
+const COL_W = 150;
+const ROW_H = 170;
+const GRID_W = 6 * COL_W;
+const GRID_H = 3 * ROW_H + 60;
+
+const DESKS = {
+  research: { label: "Alpha Research", color: "#9677D0", rowStart: 0, rowEnd: 0 },
+  execution: { label: "Trade Execution", color: "#22C55E", rowStart: 1, rowEnd: 1 },
+  oversight: { label: "Portfolio Oversight", color: "#F89318", rowStart: 2, rowEnd: 2 },
+};
+
+interface AgentState {
+  id: string;
+  status: string;
+  current_task: string | null;
+  last_heartbeat: string | null;
+  elo: number;
+  trades_win?: number;
+  trades_loss?: number;
+}
+
+interface Bubble {
+  id: number;
+  agentId: AgentId;
+  symbol: string;
+  direction: string;
+  thesis: string;
+  bornAt: number;
+}
+
+interface Particle {
+  id: number;
+  from: AgentId;
+  to: AgentId;
+  direction: string;
+  bornAt: number;
+  durationMs: number;
+}
+
+function agentPos(id: AgentId): { cx: number; cy: number } {
+  const a = AGENTS.find((x) => x.id === id);
+  if (!a) return { cx: 0, cy: 0 };
+  return {
+    cx: a.x * COL_W + COL_W / 2,
+    cy: a.y * ROW_H + ROW_H / 2 + 30,
+  };
 }
 
 export default function FloorPage() {
-  const [selected, setSelected] = useState<string | null>(null);
-  const [bubbles, setBubbles] = useState<Map<string, Bubble>>(new Map());
-  const [activeAgents, setActiveAgents] = useState<Set<string>>(new Set());
-  const [bullThesis, setBullThesis] = useState("Awaiting analysis…");
-  const [bearThesis, setBearThesis] = useState("Awaiting analysis…");
-  const [consensus, setConsensus] = useState(0.5); // 0=full bear, 1=full bull
-  const bubbleCounter = useRef(0);
+  const [agents, setAgents] = useState<Record<string, AgentState>>({});
+  const [bubbles, setBubbles] = useState<Bubble[]>([]);
+  const [particles, setParticles] = useState<Particle[]>([]);
+  const [selected, setSelected] = useState<AgentId | null>(null);
+  const [, tick] = useState(0); // re-render for particle animation
+  const wsRef = useRef<WebSocket | null>(null);
+  const idRef = useRef(1);
 
-  // Poll for signals
-  useEffect(() => {
-    const ws = new WebSocket(`${API.replace("http", "ws")}/ws`);
-    ws.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        const signals: Signal[] = data.signals ?? (data.type === "signal" ? [data] : []);
-        signals.forEach((sig) => {
-          const agentId = sig.agent_id;
-          if (!agentId) return;
-          const id = ++bubbleCounter.current;
-          const bubble: Bubble = { agentId, text: sig.thesis ?? "Signal emitted", dir: sig.direction ?? "NEUTRAL", id };
-          setBubbles(prev => new Map(prev).set(agentId, bubble));
-          setActiveAgents(prev => new Set(prev).add(agentId));
-          setTimeout(() => {
-            setBubbles(prev => { const m = new Map(prev); m.delete(agentId); return m; });
-            setActiveAgents(prev => { const s = new Set(prev); s.delete(agentId); return s; });
-          }, 5000);
-          if (agentId === "bull") setBullThesis(sig.thesis ?? bullThesis);
-          if (agentId === "bear") setBearThesis(sig.thesis ?? bearThesis);
-        });
-      } catch {}
-    };
-    return () => ws.close();
+  // Poll agent status
+  const fetchAgents = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/api/agents`);
+      if (!r.ok) return;
+      const list = await r.json();
+      const map: Record<string, AgentState> = {};
+      for (const a of list) map[a.id] = a;
+      setAgents(map);
+    } catch {}
   }, []);
 
-  const selectedAgent = AGENTS.find(a => a.id === selected);
+  useEffect(() => {
+    fetchAgents();
+    const iv = setInterval(fetchAgents, 2_000);
+    return () => clearInterval(iv);
+  }, [fetchAgents]);
 
-  // Isometric grid layout — 4 columns, rows staggered
-  const COL_W = 130, ROW_H = 110;
-  const maxCols = Math.max(...AGENTS.map(a => a.x)) + 1;
-  const maxRows = Math.max(...AGENTS.map(a => a.y)) + 1;
-  const gridW = maxCols * COL_W + 60;
-  const gridH = maxRows * ROW_H + 60;
+  // WebSocket for live signals
+  useEffect(() => {
+    let retry: ReturnType<typeof setTimeout>;
+    const connect = () => {
+      try {
+        const ws = new WebSocket(WS_URL);
+        wsRef.current = ws;
+        ws.onmessage = (e) => {
+          try {
+            const d = JSON.parse(e.data);
+            if (d.type === "signal") {
+              const agentId = (d.agent_id as AgentId) || (d.agent_name ?? "").toLowerCase();
+              const validAgent = AGENTS.find((a) => a.id === agentId);
+              if (!validAgent) return;
+              const bubbleId = idRef.current++;
+              const newBubble: Bubble = {
+                id: bubbleId,
+                agentId: agentId,
+                symbol: d.symbol || "?",
+                direction: d.direction || "NEUTRAL",
+                thesis: (d.thesis || "").slice(0, 100),
+                bornAt: Date.now(),
+              };
+              setBubbles((prev) => [...prev.filter((b) => b.agentId !== agentId), newBubble]);
+
+              // Particle toward Nova (research desk) or Diana (if execution-relevant)
+              const target: AgentId = ["diana", "atlas"].includes(agentId) ? "sage" : "nova";
+              if (agentId !== target) {
+                const p: Particle = {
+                  id: idRef.current++,
+                  from: agentId,
+                  to: target,
+                  direction: d.direction || "NEUTRAL",
+                  bornAt: Date.now(),
+                  durationMs: 1500,
+                };
+                setParticles((prev) => [...prev, p]);
+              }
+            }
+          } catch {}
+        };
+        ws.onclose = () => { retry = setTimeout(connect, 5_000); };
+        ws.onerror = () => ws.close();
+      } catch {}
+    };
+    connect();
+    return () => {
+      clearTimeout(retry);
+      wsRef.current?.close();
+    };
+  }, []);
+
+  // Animation frame loop for particles + bubble expiry
+  useEffect(() => {
+    let raf: number;
+    const loop = () => {
+      const now = Date.now();
+      setBubbles((prev) => prev.filter((b) => now - b.bornAt < 8_000));
+      setParticles((prev) => prev.filter((p) => now - p.bornAt < p.durationMs + 200));
+      tick((t) => t + 1);
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   return (
-    <div style={{ minHeight: "100vh", background: "var(--bg-void)", color: "var(--text-primary)", padding: "32px", fontFamily: "var(--font-sans)" }}>
-      <style>{`@keyframes bubbleFadeIn{from{opacity:0;transform:translateX(-50%) translateY(6px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}`}</style>
-      <div style={{ maxWidth: 1200, margin: "0 auto" }}>
-        <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>Trading Floor</h1>
-        <p style={{ color: "var(--text-secondary)", fontSize: 13, marginBottom: 6, maxWidth: 700 }}>
-          Spatial view of the desk. Each tile is an agent — when it lights up, that agent is actively analyzing a symbol. Speech bubbles show the most recent signal. Click any desk for details.
-        </p>
-        <p style={{ color: "var(--text-tertiary)", fontSize: 12, marginBottom: 24, maxWidth: 700 }}>
-          This is the same data as Mission Control's Agent Cycle panel, rendered as a floor plan for at-a-glance awareness.
-        </p>
+    <div style={{ padding: "28px 32px", maxWidth: 1400, margin: "0 auto", minHeight: "100vh" }}>
+      <style>{`
+        @keyframes pulse { 0% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.05); opacity: 0.85; } 100% { transform: scale(1); opacity: 1; } }
+        @keyframes bubbleIn { from { opacity: 0; transform: translateX(-50%) translateY(8px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+        @keyframes bubbleOut { from { opacity: 1; } to { opacity: 0; } }
+      `}</style>
 
-        <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
-          {/* Floor grid */}
-          <div style={{ flex: "1 1 500px", position: "relative", height: gridH, minWidth: gridW }}>
-            {AGENTS.map(agent => (
-              <div key={agent.id} style={{
-                position: "absolute",
-                left: agent.x * COL_W + (agent.y % 2 === 1 ? COL_W / 2 : 0),
-                top: agent.y * ROW_H,
+      <div style={{ marginBottom: 18 }}>
+        <h1 style={{ fontSize: 22, fontWeight: 800, color: "var(--text-primary)", letterSpacing: "-0.02em", margin: "0 0 6px 0" }}>
+          Trading Floor — Live
+        </h1>
+        <p style={{ fontSize: 13, color: "var(--text-tertiary)", margin: 0, maxWidth: 800 }}>
+          The room where the agents work. Desks glow when an agent is active. Thought bubbles pop when signals emit. Particles show data flowing from analysts to Nova (synthesis), Diana (risk check), and Atlas (execution).
+        </p>
+      </div>
+
+      <div style={{ position: "relative", width: "100%", overflowX: "auto" }}>
+        <div style={{ position: "relative", width: GRID_W, height: GRID_H, margin: "0 auto" }}>
+          {/* Desk zone backgrounds */}
+          {Object.entries(DESKS).map(([k, d]) => (
+            <div key={k} style={{
+              position: "absolute",
+              left: 0,
+              top: d.rowStart * ROW_H + 30,
+              width: GRID_W,
+              height: ROW_H - 10,
+              background: `linear-gradient(90deg, ${d.color}08, transparent 80%)`,
+              borderLeft: `3px solid ${d.color}44`,
+              borderRadius: 8,
+            }}>
+              <div style={{
+                position: "absolute", top: 8, left: 12,
+                fontSize: 10, fontWeight: 700, letterSpacing: "0.08em",
+                color: d.color, textTransform: "uppercase", opacity: 0.8,
               }}>
-                <AgentDesk
-                  agent={agent}
-                  bubble={bubbles.get(agent.id) ?? null}
-                  active={activeAgents.has(agent.id)}
-                  onClick={() => setSelected(selected === agent.id ? null : agent.id)}
-                />
+                {d.label}
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
 
-          {/* Detail panel */}
-          {selectedAgent && (
-            <div className="glass-panel" style={{ flex: "0 0 260px", padding: 20 }}>
-              <div style={{ fontWeight: 700, fontSize: 18, color: selectedAgent.color, marginBottom: 4 }}>{selectedAgent.name}</div>
-              <div style={{ color: "var(--text-tertiary)", fontSize: 12, marginBottom: 16 }}>{selectedAgent.role}</div>
-              <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 8 }}>Status</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
-                <div style={{ width: 8, height: 8, borderRadius: "50%", background: activeAgents.has(selectedAgent.id) ? "var(--status-normal)" : "var(--status-off)" }} />
-                <span style={{ fontSize: 13 }}>{activeAgents.has(selectedAgent.id) ? "Active" : "Idle"}</span>
+          {/* SVG for particles */}
+          <svg width={GRID_W} height={GRID_H} style={{ position: "absolute", left: 0, top: 0, pointerEvents: "none" }}>
+            {particles.map((p) => {
+              const elapsed = Date.now() - p.bornAt;
+              const progress = Math.min(1, elapsed / p.durationMs);
+              const from = agentPos(p.from);
+              const to = agentPos(p.to);
+              const x = from.cx + (to.cx - from.cx) * progress;
+              const y = from.cy + (to.cy - from.cy) * progress;
+              const color = p.direction === "LONG" ? "#22C55E" : p.direction === "SHORT" ? "#EF4444" : "#94A3B8";
+              return (
+                <g key={p.id}>
+                  <line x1={from.cx} y1={from.cy} x2={to.cx} y2={to.cy} stroke={color} strokeOpacity="0.15" strokeWidth="1" strokeDasharray="4 4" />
+                  <circle cx={x} cy={y} r={5} fill={color} opacity={1 - progress * 0.4}>
+                    <animate attributeName="r" from="5" to="8" dur="0.6s" repeatCount="indefinite" />
+                  </circle>
+                </g>
+              );
+            })}
+          </svg>
+
+          {/* Agent desks */}
+          {AGENTS.map((a) => {
+            const st = agents[a.id];
+            const active = st?.status === "active";
+            const bubble = bubbles.find((b) => b.agentId === a.id);
+            return (
+              <div key={a.id} style={{
+                position: "absolute",
+                left: a.x * COL_W + (COL_W - 110) / 2,
+                top: a.y * ROW_H + 45,
+                width: 110,
+                textAlign: "center",
+                cursor: "pointer",
+                userSelect: "none",
+              }} onClick={() => setSelected(selected === a.id ? null : a.id)}>
+                {bubble && (
+                  <div style={{
+                    position: "absolute", bottom: "calc(100% - 8px)", left: "50%", transform: "translateX(-50%)",
+                    background: "rgba(20,25,35,0.95)", border: `1px solid ${a.color}`,
+                    borderRadius: 8, padding: "6px 10px", fontSize: 11, minWidth: 140, maxWidth: 180,
+                    zIndex: 10, animation: "bubbleIn 0.3s ease",
+                    boxShadow: `0 4px 14px ${a.color}33`,
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                      <span style={{ fontWeight: 700, color: bubble.direction === "LONG" ? "#22C55E" : bubble.direction === "SHORT" ? "#EF4444" : "#94A3B8" }}>
+                        {bubble.direction}
+                      </span>
+                      <span style={{ fontSize: 9, color: "var(--text-tertiary)", fontFamily: "var(--font-mono, monospace)" }}>
+                        {bubble.symbol}
+                      </span>
+                    </div>
+                    <div style={{ color: "var(--text-secondary)", lineHeight: 1.35, fontSize: 10 }}>
+                      {bubble.thesis}{bubble.thesis.length >= 100 ? "…" : ""}
+                    </div>
+                  </div>
+                )}
+
+                <div style={{
+                  position: "relative",
+                  width: 80, height: 60, margin: "0 auto",
+                  animation: active ? "pulse 1.8s ease-in-out infinite" : "none",
+                }}>
+                  <svg width="80" height="60" viewBox="0 0 80 60">
+                    <defs>
+                      <linearGradient id={`grad-${a.id}`} x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={a.color} stopOpacity={active ? 1 : 0.4} />
+                        <stop offset="100%" stopColor={a.color} stopOpacity={active ? 0.6 : 0.2} />
+                      </linearGradient>
+                    </defs>
+                    <polygon points="40,4 76,22 40,40 4,22" fill={`url(#grad-${a.id})`} stroke={a.color} strokeOpacity={active ? 1 : 0.3} />
+                    <polygon points="4,22 40,40 40,52 4,34" fill={a.color} opacity={active ? 0.35 : 0.15} />
+                    <polygon points="76,22 40,40 40,52 76,34" fill={a.color} opacity={active ? 0.55 : 0.25} />
+                    <polygon points="30,12 50,20 50,28 30,20" fill="#0A0D13" opacity="0.9" />
+                    <polygon points="31,13 49,20 49,27 31,20" fill={a.color} opacity={active ? 0.7 : 0.3} />
+                    {active && (
+                      <circle cx="72" cy="10" r="4" fill="#22C55E">
+                        <animate attributeName="opacity" values="1;0.2;1" dur="1.2s" repeatCount="indefinite" />
+                      </circle>
+                    )}
+                  </svg>
+                </div>
+
+                <div style={{
+                  fontSize: 12, fontWeight: 700, color: active ? "var(--text-primary)" : "var(--text-secondary)",
+                  marginTop: 6, letterSpacing: "-0.01em",
+                }}>
+                  {a.name}
+                </div>
+                <div style={{ fontSize: 9, color: "var(--text-tertiary)", marginTop: 1 }}>
+                  {a.role}
+                </div>
+                {st?.current_task && (
+                  <div style={{
+                    fontSize: 9, color: a.color, marginTop: 3,
+                    fontFamily: "var(--font-mono, monospace)",
+                    padding: "1px 6px", background: `${a.color}22`, borderRadius: 3, display: "inline-block",
+                  }}>
+                    {st.current_task}
+                  </div>
+                )}
+                {st && (
+                  <div style={{ fontSize: 9, color: "var(--text-tertiary)", marginTop: 2 }}>
+                    ELO {Math.round(st.elo)}
+                    {st.trades_win != null && st.trades_win + (st.trades_loss || 0) > 0 && (
+                      <span> · {st.trades_win}W-{st.trades_loss || 0}L</span>
+                    )}
+                  </div>
+                )}
               </div>
-              <button onClick={() => setSelected(null)} style={{ background: "var(--bg-surface-3)", border: "1px solid var(--border-default)", borderRadius: "var(--radius-sm)", color: "var(--text-secondary)", padding: "6px 14px", fontSize: 12, cursor: "pointer" }}>Close</button>
-            </div>
-          )}
+            );
+          })}
         </div>
+      </div>
 
-        {/* Bull vs Bear debate */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 16, marginTop: 28, alignItems: "center" }}>
-          <div className="glass-panel" style={{ padding: 20, borderColor: "rgba(88,214,141,0.2)", background: "rgba(88,214,141,0.04)" }}>
-            <div style={{ fontSize: 11, color: "var(--accent-profit)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Bull — {AGENTS.find(a=>a.id==="bull")?.role}</div>
-            <div style={{ fontSize: 13, color: "var(--text-primary)", lineHeight: 1.6 }}>{bullThesis}</div>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
-            <div style={{ fontSize: 11, color: "var(--text-tertiary)", textTransform: "uppercase" }}>Consensus</div>
-            <div style={{ width: 12, height: 80, background: "var(--bg-surface-3)", borderRadius: 6, position: "relative", overflow: "hidden" }}>
-              <div style={{ position: "absolute", bottom: 0, width: "100%", height: `${consensus * 100}%`, background: `linear-gradient(to top, var(--accent-loss), var(--accent-profit))`, transition: "height 0.5s" }} />
+      {selected && agents[selected] && (
+        <div className="glass-panel" style={{
+          position: "fixed", right: 24, top: 100, width: 300,
+          padding: 20, zIndex: 100,
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-primary)" }}>
+                {AGENTS.find((a) => a.id === selected)?.name}
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+                {AGENTS.find((a) => a.id === selected)?.role}
+              </div>
             </div>
+            <button onClick={() => setSelected(null)} style={{
+              background: "transparent", border: "1px solid var(--border-default)",
+              color: "var(--text-tertiary)", padding: "4px 10px", borderRadius: 4,
+              fontSize: 11, cursor: "pointer",
+            }}>Close</button>
           </div>
-          <div className="glass-panel" style={{ padding: 20, borderColor: "rgba(248,81,73,0.2)", background: "rgba(248,81,73,0.04)" }}>
-            <div style={{ fontSize: 11, color: "var(--accent-loss)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Bear — {AGENTS.find(a=>a.id==="bear")?.role}</div>
-            <div style={{ fontSize: 13, color: "var(--text-primary)", lineHeight: 1.6 }}>{bearThesis}</div>
+          <div style={{ fontSize: 12, display: "flex", flexDirection: "column", gap: 8, color: "var(--text-secondary)" }}>
+            <div>Status: <strong style={{ color: agents[selected].status === "active" ? "#22C55E" : "var(--text-tertiary)" }}>{agents[selected].status}</strong></div>
+            {agents[selected].current_task && <div>Working on: <strong>{agents[selected].current_task}</strong></div>}
+            <div>ELO: {Math.round(agents[selected].elo)}</div>
+            {agents[selected].trades_win != null && (
+              <div>Record: {agents[selected].trades_win}W / {agents[selected].trades_loss || 0}L</div>
+            )}
+            {agents[selected].last_heartbeat && (
+              <div style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+                Last heartbeat: {new Date(agents[selected].last_heartbeat).toLocaleTimeString()}
+              </div>
+            )}
           </div>
         </div>
+      )}
+
+      <div style={{
+        marginTop: 32, fontSize: 11, color: "var(--text-tertiary)",
+        display: "flex", gap: 18, justifyContent: "center",
+      }}>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: "#22C55E", marginRight: 5, verticalAlign: "middle" }} />Active</span>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: "var(--border-subtle)", marginRight: 5, verticalAlign: "middle" }} />Idle</span>
+        <span>Green particles = bullish signal · red = bearish</span>
       </div>
     </div>
   );
