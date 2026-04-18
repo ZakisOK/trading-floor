@@ -14,29 +14,68 @@ interface AgentDef {
   role: string;
   desk: "research" | "execution" | "oversight";
   color: string;
-  x: number; // grid col (0..5)
-  y: number; // grid row (0..3)
+  x: number;
+  y: number;
+  does: string;       // What this agent actually does
+  inputs: string;     // What drives their decisions
+  output: string;     // What they emit
 }
 
 // Layout: 3 desks as visual zones, agents placed within
 const AGENTS: AgentDef[] = [
   // Desk 1 — Alpha Research (top row)
-  { id: "marcus", name: "Marcus", role: "Fundamentals", desk: "research", color: "#9677D0", x: 0, y: 0 },
-  { id: "vera", name: "Vera", role: "Technical", desk: "research", color: "#643588", x: 1, y: 0 },
-  { id: "rex", name: "Rex", role: "Sentiment", desk: "research", color: "#c084fc", x: 2, y: 0 },
-  { id: "xrp_analyst", name: "XRP Analyst", role: "Symbol Specialist", desk: "research", color: "#a855f7", x: 3, y: 0 },
-  { id: "polymarket_scout", name: "Polymarket", role: "Prediction", desk: "research", color: "#7c3aed", x: 4, y: 0 },
-  { id: "nova", name: "Nova", role: "Synthesizer", desk: "research", color: "#3EB6B0", x: 5, y: 0 },
+  { id: "marcus", name: "Marcus", role: "Fundamentals Analyst", desk: "research", color: "#9677D0", x: 0, y: 0,
+    does: "Weighs macro + on-chain fundamentals to call direction.",
+    inputs: "Price, volume, macro regime snapshot (FRED), recent news sentiment.",
+    output: "Signal: LONG/SHORT/NEUTRAL + confidence 0-1 + thesis paragraph." },
+  { id: "vera", name: "Vera", role: "Technical Analyst", desk: "research", color: "#643588", x: 1, y: 0,
+    does: "Reads chart structure — support/resistance, momentum, breakouts.",
+    inputs: "Current price, volume, and other agents' signals (for context).",
+    output: "Signal with technical justification." },
+  { id: "rex", name: "Rex", role: "Sentiment Analyst", desk: "research", color: "#c084fc", x: 2, y: 0,
+    does: "Scores crowd psychology — fear/greed, Twitter buzz, news tone.",
+    inputs: "Recent signals, symbol context, macro mood.",
+    output: "Signal + sentiment_score written to Redis for the dashboard." },
+  { id: "xrp_analyst", name: "XRP Analyst", role: "XRP Specialist", desk: "research", color: "#a855f7", x: 3, y: 0,
+    does: "Deep-dive on XRP only — Ripple catalysts, XRPL on-chain, regulatory.",
+    inputs: "XRP-specific news, whale moves, COT if available.",
+    output: "Conviction delta applied to the XRP consensus." },
+  { id: "polymarket_scout", name: "Polymarket", role: "Prediction Market", desk: "research", color: "#7c3aed", x: 4, y: 0,
+    does: "Pulls prediction-market odds relevant to the symbol (e.g. Fed rate cuts, XRP regulatory).",
+    inputs: "Polymarket API signals for macro + symbol-specific events.",
+    output: "Confidence boost ±20% applied to other analysts' signals." },
+  { id: "nova", name: "Nova", role: "Synthesizer", desk: "research", color: "#3EB6B0", x: 5, y: 0,
+    does: "Distills all analyst signals into a single conviction packet for the execution desk.",
+    inputs: "Every research-desk signal this cycle.",
+    output: "Weighted direction + confidence + consensus strength." },
 
-  // Desk 2 — Trade Execution (middle row)
-  { id: "diana", name: "Diana", role: "Risk Check", desk: "execution", color: "#ED6F91", x: 2, y: 1 },
-  { id: "atlas", name: "Atlas", role: "Execution", desk: "execution", color: "#22C55E", x: 3, y: 1 },
+  // Desk 2 — Trade Execution
+  { id: "diana", name: "Diana", role: "Risk Manager", desk: "execution", color: "#ED6F91", x: 2, y: 1,
+    does: "Gatekeeper. Checks avg confidence, consensus %, direction, concentration limits, daily drawdown.",
+    inputs: "Nova's conviction packet, open positions, recent P&L, autonomy mode.",
+    output: "risk_approved: true/false. If false, no trade." },
+  { id: "atlas", name: "Atlas", role: "Execution Agent", desk: "execution", color: "#22C55E", x: 3, y: 1,
+    does: "Routes approved signals to the broker. In COMMANDER, queues for operator approval.",
+    inputs: "Diana's approval, current price, autonomy mode.",
+    output: "Paper fill at mid + slippage + commission. Updates Redis paper state." },
 
-  // Desk 3 — Portfolio Oversight (bottom row)
-  { id: "sage", name: "Sage", role: "Supervisor", desk: "oversight", color: "#F89318", x: 1, y: 2 },
-  { id: "scout", name: "Scout", role: "Opportunities", desk: "oversight", color: "#38BDF8", x: 3, y: 2 },
-  { id: "bull", name: "Bull", role: "Bull Case", desk: "oversight", color: "#E3A535", x: 0, y: 2 },
-  { id: "bear", name: "Bear", role: "Bear Case", desk: "oversight", color: "#B87D1E", x: 4, y: 2 },
+  // Desk 3 — Portfolio Oversight
+  { id: "sage", name: "Sage", role: "Portfolio Chief", desk: "oversight", color: "#F89318", x: 1, y: 2,
+    does: "Supervises the whole graph via LangGraph. Sequences agents, passes state.",
+    inputs: "Symbol, market data, all agent signals.",
+    output: "Full cycle completion with final state snapshot." },
+  { id: "scout", name: "Scout", role: "Opportunity Scout", desk: "oversight", color: "#38BDF8", x: 3, y: 2,
+    does: "Looks for symbols the firm isn't watching but should — new listings, unusual volume.",
+    inputs: "Market-wide scans, news flow.",
+    output: "Suggested additions to the tracked-symbols list." },
+  { id: "bull", name: "Bull", role: "Bull Researcher", desk: "oversight", color: "#E3A535", x: 0, y: 2,
+    does: "Steelmans the long case. Adversarial check against bear bias.",
+    inputs: "Current signal set.",
+    output: "Bull thesis paragraph + upside target." },
+  { id: "bear", name: "Bear", role: "Bear Researcher", desk: "oversight", color: "#B87D1E", x: 4, y: 2,
+    does: "Steelmans the short case. Adversarial check against bull bias.",
+    inputs: "Current signal set.",
+    output: "Bear thesis + downside scenarios." },
 ];
 
 const COL_W = 150;
@@ -336,41 +375,100 @@ export default function FloorPage() {
         </div>
       </div>
 
-      {selected && agents[selected] && (
-        <div className="glass-panel" style={{
-          position: "fixed", right: 24, top: 100, width: 300,
-          padding: 20, zIndex: 100,
-        }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-            <div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-primary)" }}>
-                {AGENTS.find((a) => a.id === selected)?.name}
+      {selected && agents[selected] && (() => {
+        const def = AGENTS.find((a) => a.id === selected)!;
+        const st = agents[selected];
+        return (
+          <div className="glass-panel" style={{
+            position: "fixed", right: 24, top: 100, width: 340,
+            padding: 22, zIndex: 100, borderLeft: `4px solid ${def.color}`,
+            maxHeight: "calc(100vh - 140px)", overflowY: "auto",
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 14 }}>
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: def.color }}>
+                  {def.name}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                  {def.role}
+                </div>
               </div>
-              <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-                {AGENTS.find((a) => a.id === selected)?.role}
+              <button onClick={() => setSelected(null)} style={{
+                background: "transparent", border: "1px solid var(--border-default)",
+                color: "var(--text-tertiary)", padding: "3px 10px", borderRadius: 4,
+                fontSize: 11, cursor: "pointer",
+              }}>×</button>
+            </div>
+
+            {/* Live status block */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14, fontSize: 11 }}>
+              <div>
+                <div style={{ fontSize: 9, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 2 }}>Status</div>
+                <div style={{ fontWeight: 700, color: st.status === "active" ? "#22C55E" : "var(--text-tertiary)" }}>
+                  {st.status === "active" ? "Working" : "Idle"}
+                </div>
+              </div>
+              {st.current_task && (
+                <div>
+                  <div style={{ fontSize: 9, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 2 }}>On</div>
+                  <div style={{ fontWeight: 600, fontFamily: "var(--font-mono, monospace)" }}>{st.current_task}</div>
+                </div>
+              )}
+              <div>
+                <div style={{ fontSize: 9, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 2 }}>ELO</div>
+                <div style={{ fontWeight: 600, fontFamily: "var(--font-mono, monospace)" }}>
+                  {Math.round(st.elo)}
+                  {st.elo === 1200 && <span style={{ color: "var(--text-tertiary)", fontSize: 9, marginLeft: 4 }}>(starting)</span>}
+                </div>
+              </div>
+              {st.trades_win != null && (
+                <div>
+                  <div style={{ fontSize: 9, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 2 }}>Record</div>
+                  <div style={{ fontWeight: 600 }}>
+                    <span style={{ color: "var(--accent-profit)" }}>{st.trades_win}W</span>
+                    <span style={{ color: "var(--text-tertiary)" }}> / </span>
+                    <span style={{ color: "var(--accent-loss)" }}>{st.trades_loss || 0}L</span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* What the agent does */}
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 9, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+                What they do
+              </div>
+              <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.45 }}>
+                {def.does}
               </div>
             </div>
-            <button onClick={() => setSelected(null)} style={{
-              background: "transparent", border: "1px solid var(--border-default)",
-              color: "var(--text-tertiary)", padding: "4px 10px", borderRadius: 4,
-              fontSize: 11, cursor: "pointer",
-            }}>Close</button>
-          </div>
-          <div style={{ fontSize: 12, display: "flex", flexDirection: "column", gap: 8, color: "var(--text-secondary)" }}>
-            <div>Status: <strong style={{ color: agents[selected].status === "active" ? "#22C55E" : "var(--text-tertiary)" }}>{agents[selected].status}</strong></div>
-            {agents[selected].current_task && <div>Working on: <strong>{agents[selected].current_task}</strong></div>}
-            <div>ELO: {Math.round(agents[selected].elo)}</div>
-            {agents[selected].trades_win != null && (
-              <div>Record: {agents[selected].trades_win}W / {agents[selected].trades_loss || 0}L</div>
-            )}
-            {agents[selected].last_heartbeat && (
-              <div style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
-                Last heartbeat: {new Date(agents[selected].last_heartbeat).toLocaleTimeString()}
+
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 9, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+                Inputs
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.45 }}>
+                {def.inputs}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 9, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+                Output
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.45 }}>
+                {def.output}
+              </div>
+            </div>
+
+            {st.last_heartbeat && (
+              <div style={{ fontSize: 10, color: "var(--text-tertiary)", paddingTop: 10, borderTop: "1px solid var(--border-subtle)" }}>
+                Last heartbeat: {new Date(st.last_heartbeat).toLocaleTimeString()}
               </div>
             )}
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       <div style={{
         marginTop: 32, fontSize: 11, color: "var(--text-tertiary)",
