@@ -1,6 +1,10 @@
 """Atlas — Execution agent."""
 from __future__ import annotations
 
+import json
+import uuid
+from datetime import UTC, datetime
+
 import structlog
 from src.agents.base import BaseAgent, AgentState
 from src.streams.producer import produce
@@ -9,6 +13,13 @@ from src.core.redis import get_redis
 from src.execution.broker import paper_broker
 
 logger = structlog.get_logger()
+
+
+async def _get_autonomy_mode() -> str:
+    """Read autonomy_mode from Redis. Defaults to COMMANDER (safest)."""
+    redis = get_redis()
+    val = await redis.hget("config:system", "autonomy_mode")
+    return (val or "COMMANDER").upper()
 
 
 class AtlasAgent(BaseAgent):
@@ -31,8 +42,34 @@ class AtlasAgent(BaseAgent):
         if direction in ("LONG", "SHORT") and price > 0:
             side = "BUY" if direction == "LONG" else "SELL"
             existing = await paper_broker._get_position(symbol)
+            mode = await _get_autonomy_mode()
+
             if side == "BUY" and existing is not None:
                 logger.info("atlas_skip_existing_position", symbol=symbol)
+            elif mode == "COMMANDER":
+                # Operator must approve each trade. Enqueue to Redis.
+                signal_id = uuid.uuid4().hex[:10]
+                redis = get_redis()
+                await redis.hset("approval:pending", signal_id, json.dumps({
+                    "signal_id": signal_id,
+                    "symbol": symbol,
+                    "side": side,
+                    "direction": direction,
+                    "price": price,
+                    "confidence": confidence,
+                    "agent_id": self.agent_id,
+                    "strategy": "consensus",
+                    "reasoning": state.get("reasoning", "")[:500],
+                    "contributing_agents": [
+                        s.get("agent", "").lower()
+                        for s in state.get("signals", [])
+                        if s.get("direction") == direction and s.get("agent")
+                    ],
+                    "created_at": datetime.now(UTC).isoformat(),
+                }))
+                order_summary = f"QUEUED {side} {symbol} @ ${price:.4f} (awaiting approval)"
+                logger.info("atlas_order_queued_commander", symbol=symbol, side=side,
+                            signal_id=signal_id)
             else:
                 try:
                     order = await paper_broker.submit_order(

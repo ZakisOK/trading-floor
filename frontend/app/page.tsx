@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { DeskStrip, PipelineFooter } from "@/components/DeskStrip";
 import { LlmCostCard } from "@/components/LlmCostCard";
+import { ApprovalBanner } from "@/components/ApprovalBanner";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const WS_URL = (API.replace(/^http/, "ws")) + "/ws/stream";
@@ -210,58 +211,43 @@ export default function MissionControlPage() {
   const eventsRef = useRef<StreamEvent[]>([]);
 
   const fetchAll = useCallback(async () => {
-    try {
-      const [portRes, posRes, agRes] = await Promise.allSettled([
-        fetch(`${API}/api/execution/portfolio`).then(r => r.json()),
-        fetch(`${API}/api/execution/positions`).then(r => r.json()),
-        fetch(`${API}/api/agents`).then(r => r.json()),
-      ]);
+    const j = (url: string) => fetch(url).then(r => r.json());
+    const sentSymbols = ["XRP/USDT", "BTC/USDT", "GC=F"];
+    const sentPaths = ["XRP_USDT", "BTC_USDT", "GC_F"];
 
-      if (portRes.status === "fulfilled") setPortfolio(portRes.value);
-      if (posRes.status === "fulfilled") {
-        setPositions(Array.isArray(posRes.value) ? posRes.value : posRes.value?.positions ?? []);
-      }
-      if (agRes.status === "fulfilled") {
-        setAgents(Array.isArray(agRes.value) ? agRes.value : agRes.value?.agents ?? []);
-      }
-    } catch {
-      // API not available — degrade gracefully
+    const results = await Promise.allSettled([
+      j(`${API}/api/execution/portfolio`),
+      j(`${API}/api/execution/positions`),
+      j(`${API}/api/agents`),
+      j(`${API}/api/signals/recent?limit=10`),
+      j(`${API}/api/market/regime?symbol=XRP%2FUSDT`),
+      j(`${API}/api/market/sentiment/MACRO`),
+      ...sentPaths.map(p => j(`${API}/api/market/sentiment/${p}`)),
+    ]);
+
+    const [portRes, posRes, agRes, sigRes, regRes, macroRes, ...sentRes] = results;
+
+    if (portRes.status === "fulfilled") setPortfolio(portRes.value);
+    if (posRes.status === "fulfilled") {
+      setPositions(Array.isArray(posRes.value) ? posRes.value : posRes.value?.positions ?? []);
     }
-
-    try {
-      const sigRes = await fetch(`${API}/api/signals/recent?limit=10`).then(r => r.json());
-      const rawSignals = Array.isArray(sigRes) ? sigRes : sigRes?.signals ?? [];
+    if (agRes.status === "fulfilled") {
+      setAgents(Array.isArray(agRes.value) ? agRes.value : agRes.value?.agents ?? []);
+    }
+    if (sigRes.status === "fulfilled") {
+      const rawSignals = Array.isArray(sigRes.value) ? sigRes.value : sigRes.value?.signals ?? [];
       setSignals(rawSignals.slice(0, 6));
-      // Filter copy trade signals
-      const copy = rawSignals.filter((s: Signal) => s.signal_type === "copy_trade").slice(0, 3);
-      setCopySignals(copy);
-    } catch { /* noop */ }
-
-    try {
-      const regRes = await fetch(`${API}/api/market/regime?symbol=XRP%2FUSDT`).then(r => r.json());
-      setRegime(regRes?.regime ?? "UNKNOWN");
-    } catch { /* noop */ }
-
-    // Fetch macro regime from FRED cache snapshot
-    try {
-      const snapRaw = await fetch(`${API}/api/market/sentiment/MACRO`).then(r => r.json());
-      setMacroRegime(snapRaw?.macro_regime ?? snapRaw?.label ?? "NEUTRAL");
-    } catch { /* noop */ }
-
-    // Fetch sentiment for tracked symbols in parallel
-    try {
-      const sentSymbols = ["XRP/USDT", "BTC/USDT", "GC=F"];
-      const sentPaths   = ["XRP_USDT", "BTC_USDT", "GC_F"];
-      const sentRes = await Promise.allSettled(
-        sentPaths.map(p => fetch(`${API}/api/market/sentiment/${p}`).then(r => r.json()))
-      );
-      const sentMap: Record<string, { score: number; label: string }> = {};
-      sentRes.forEach((r, i) => {
-        if (r.status === "fulfilled")
-          sentMap[sentSymbols[i]] = { score: r.value?.score ?? 0, label: r.value?.label ?? "NEUTRAL" };
-      });
-      setSentimentBySymbol(sentMap);
-    } catch { /* noop */ }
+    }
+    if (regRes.status === "fulfilled") setRegime(regRes.value?.regime ?? "UNKNOWN");
+    if (macroRes.status === "fulfilled") {
+      setMacroRegime(macroRes.value?.macro_regime ?? macroRes.value?.label ?? "NEUTRAL");
+    }
+    const sentMap: Record<string, { score: number; label: string }> = {};
+    sentRes.forEach((r, i) => {
+      if (r.status === "fulfilled")
+        sentMap[sentSymbols[i]] = { score: r.value?.score ?? 0, label: r.value?.label ?? "NEUTRAL" };
+    });
+    setSentimentBySymbol(sentMap);
   }, []);
 
   // WebSocket for live events
@@ -367,6 +353,9 @@ export default function MissionControlPage() {
     <div style={{ display: "flex", flex: 1, gap: 0, height: "100%" }}>
       {/* ── Main content ── */}
       <div style={{ flex: 1, overflowY: "auto", padding: "28px 24px", display: "flex", flexDirection: "column", gap: 20 }}>
+
+        {/* Mode + pending approvals banner */}
+        <ApprovalBanner />
 
         {/* Row 1: KPI cards */}
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>

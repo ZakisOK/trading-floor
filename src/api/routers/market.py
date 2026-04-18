@@ -18,7 +18,7 @@ _poly_feed = PolymarketFeed()
 _VALID_TIMEFRAMES = {"1m", "5m", "15m", "30m", "1h", "4h", "1D", "1W"}
 
 
-@router.get("/ohlcv/{symbol}", response_model=list[OHLCVResponse])
+@router.get("/ohlcv/{symbol:path}", response_model=list[OHLCVResponse])
 async def get_ohlcv(
     symbol: str,
     exchange: Annotated[str, Query()] = "coinbase",

@@ -156,8 +156,24 @@ function RiskBar({ label, value, max, color }: { label: string; value: number; m
   );
 }
 
+interface TradeHistoryItem {
+  symbol: string;
+  side: string;
+  status: "open" | "closed";
+  entry_ts: string | null;
+  exit_ts: string | null;
+  entry_price: number;
+  exit_price: number | null;
+  quantity: number;
+  pnl: number | null;
+  pnl_pct: number | null;
+  exit_reason: string | null;
+  entry_agent: string | null;
+}
+
 export default function PositionsPage() {
   const [positions, setPositions] = useState<LivePosition[]>([]);
+  const [history, setHistory] = useState<TradeHistoryItem[]>([]);
   const [risk, setRisk] = useState<RiskMetrics | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [loading, setLoading] = useState(true);
@@ -165,14 +181,16 @@ export default function PositionsPage() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [posRes, riskRes] = await Promise.all([
+      const [posRes, riskRes, histRes] = await Promise.all([
         fetch(`${API}/api/execution/positions`),
         fetch(`${API}/api/execution/risk-metrics`),
+        fetch(`${API}/api/orders/history`),
       ]);
       if (!posRes.ok) throw new Error(`Positions API ${posRes.status}`);
-      const [pos, riskData] = await Promise.all([posRes.json(), riskRes.json()]);
+      const [pos, riskData, hist] = await Promise.all([posRes.json(), riskRes.json(), histRes.json()]);
       setPositions(pos);
       setRisk(riskData);
+      setHistory(Array.isArray(hist) ? hist : []);
       setLastUpdate(new Date());
       setError(null);
     } catch (e: unknown) {
@@ -285,6 +303,68 @@ export default function PositionsPage() {
             {positions.map(p => <PositionCard key={p.symbol} pos={p} />)}
           </div>
         )}
+
+        {/* Order history — closed trades */}
+        <div style={{ marginTop: 32 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+            Order History
+          </div>
+          <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "70px 100px 80px 90px 90px 110px 100px 1fr",
+              gap: 10, padding: "10px 16px", fontSize: 10,
+              color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.05em",
+              borderBottom: "1px solid var(--border-subtle)",
+            }}>
+              <span>Status</span>
+              <span>Symbol</span>
+              <span>Side</span>
+              <span>Entry</span>
+              <span>Exit</span>
+              <span>P&L</span>
+              <span>Reason</span>
+              <span>When</span>
+            </div>
+            {history.length === 0 ? (
+              <div style={{ padding: 24, textAlign: "center", color: "var(--text-tertiary)", fontSize: 13 }}>
+                No trades yet. When Atlas fills an order it&apos;ll show here.
+              </div>
+            ) : (
+              history.slice(0, 50).map((t, i) => (
+                <div key={i} style={{
+                  display: "grid",
+                  gridTemplateColumns: "70px 100px 80px 90px 90px 110px 100px 1fr",
+                  gap: 10, padding: "10px 16px", fontSize: 12,
+                  borderBottom: "1px solid var(--border-subtle)",
+                  alignItems: "baseline",
+                }}>
+                  <span style={{
+                    fontSize: 10, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase",
+                    color: t.status === "open" ? "#f59e0b" : "var(--text-tertiary)",
+                  }}>
+                    {t.status}
+                  </span>
+                  <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>{t.symbol}</span>
+                  <span style={{ fontWeight: 700, color: "var(--accent-profit)" }}>{t.side}</span>
+                  <span style={{ ...mono, color: "var(--text-secondary)" }}>${t.entry_price.toFixed(t.entry_price < 10 ? 4 : 2)}</span>
+                  <span style={{ ...mono, color: "var(--text-secondary)" }}>
+                    {t.exit_price != null ? `$${t.exit_price.toFixed(t.exit_price < 10 ? 4 : 2)}` : "—"}
+                  </span>
+                  <span style={{ ...mono, color: t.pnl == null ? "var(--text-tertiary)" : t.pnl >= 0 ? "var(--accent-profit)" : "var(--accent-loss)", fontWeight: 600 }}>
+                    {t.pnl == null ? "open" : `${t.pnl >= 0 ? "+" : ""}$${t.pnl.toFixed(2)}`}
+                  </span>
+                  <span style={{ fontSize: 10, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                    {t.exit_reason || "—"}
+                  </span>
+                  <span style={{ ...mono, color: "var(--text-tertiary)", fontSize: 10 }}>
+                    {t.entry_ts ? new Date(t.entry_ts).toLocaleString() : "—"}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
 
       </div>
     </div>

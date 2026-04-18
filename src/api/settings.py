@@ -29,6 +29,7 @@ _SYSTEM_FIELDS = (
     "max_position_size_pct",
     "trailing_stop_pct",
     "kill_switch_enabled",
+    "autonomy_mode",
 )
 _AGENT_NAMES = (
     "atlas", "bear", "bull", "carry_agent", "commodities_analyst",
