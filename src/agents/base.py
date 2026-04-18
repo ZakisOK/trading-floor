@@ -17,8 +17,15 @@ from src.core.redis import get_redis
 from src.streams.producer import produce, produce_audit
 from src.streams import topology
 
-# Skill loader is local-filesystem and always safe to import.
-from src.agents.skills import SkillLoader, get_skill_loader
+# Skill loader is optional; stripped environments may not have the skills dir.
+try:  # pragma: no cover - tested via fallback path
+    from src.agents.skills import SkillLoader, get_skill_loader
+
+    _SKILLS_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    SkillLoader = object  # type: ignore[assignment,misc]
+    get_skill_loader = None  # type: ignore[assignment]
+    _SKILLS_AVAILABLE = False
 
 # Memory client talks to Graphiti over HTTP; guard the import so BaseAgent
 # still imports even if httpx is missing in a stripped environment.
@@ -56,20 +63,26 @@ class BaseAgent(ABC):
         self.name = name
         self.role = role
         self.elo_rating = 1200.0
-        self._skill_loader: SkillLoader = get_skill_loader()
+        self._skill_loader = get_skill_loader() if _SKILLS_AVAILABLE and get_skill_loader else None
 
     # ------------------------------------------------------------------ skills
 
     def available_skills(self) -> list[dict[str, str]]:
         """Return the cheap skill index for this agent (no bodies loaded)."""
+        if self._skill_loader is None:
+            return []
         return self._skill_loader.list_skills(self.agent_id)
 
     def load_skill(self, skill_name: str) -> Any:
         """Load a full skill by name (agent-scoped with shared fallback)."""
+        if self._skill_loader is None:
+            return None
         return self._skill_loader.load(skill_name, agent_id=self.agent_id)
 
     def skill_index_prompt(self) -> str:
         """Return raw SKILL_INDEX markdown for inclusion in a system prompt."""
+        if self._skill_loader is None:
+            return ""
         return self._skill_loader.get_system_prompt_index(self.agent_id)
 
     # ------------------------------------------------------------------ memory
