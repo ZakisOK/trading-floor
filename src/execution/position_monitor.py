@@ -61,7 +61,7 @@ async def _check_position(pos: dict, current_price: float) -> str | None:
     if pnl_pct >= TRAILING_STOP_THRESHOLD:
         new_trail = avg_price  # lock in breakeven
         if trailing_stop is None or new_trail > trailing_stop:
-            paper_broker._positions[symbol]["trailing_stop"] = new_trail
+            await paper_broker.update_position_field(symbol, "trailing_stop", new_trail)
             trailing_stop = new_trail
             logger.info(
                 "trailing_stop_activated",
@@ -143,7 +143,7 @@ async def _process_position(pos: dict) -> None:
 
 async def _flatten_all_for_kill_switch() -> None:
     """Close every open position immediately — kill switch is active."""
-    positions = paper_broker.get_positions()
+    positions = await paper_broker.get_positions()
     if not positions:
         return
     logger.critical("kill_switch_flattening_all", count=len(positions))
@@ -176,7 +176,7 @@ async def run() -> None:
                 await asyncio.sleep(MONITOR_INTERVAL)
                 continue
 
-            positions = paper_broker.get_positions()
+            positions = await paper_broker.get_positions()
             if positions:
                 await asyncio.gather(
                     *[_process_position(pos) for pos in positions],

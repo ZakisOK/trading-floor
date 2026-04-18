@@ -12,7 +12,7 @@ from datetime import datetime, UTC
 
 import structlog
 
-from src.execution.broker import paper_broker
+from src.execution.broker import paper_broker, _INITIAL_CASH
 from src.core.config import settings
 from src.core.security import activate_kill_switch, is_kill_switch_active
 from src.core.redis import get_redis
@@ -31,7 +31,7 @@ ALERTS_STREAM = "stream:alerts"
 
 async def _fetch_prices_for_positions() -> dict[str, float]:
     """REST-fetch current prices for every open position."""
-    positions = paper_broker.get_positions()
+    positions = await paper_broker.get_positions()
     if not positions:
         return {}
     prices: dict[str, float] = {}
@@ -61,7 +61,7 @@ async def _reset_daily_pnl_if_new_day(redis) -> None:
     if stored != today:
         await redis.set(DAILY_PNL_KEY, "0")
         await redis.set(DAILY_PNL_DATE_KEY, today)
-        paper_broker._daily_pnl = 0.0
+        await paper_broker.reset_daily_pnl()
         logger.info("daily_pnl_reset", date=today)
 
 
@@ -101,15 +101,15 @@ async def run() -> None:
             await _reset_daily_pnl_if_new_day(redis)
 
             current_prices = await _fetch_prices_for_positions()
-            portfolio_value = paper_broker.get_portfolio_value(current_prices)
-            daily_pnl = paper_broker._daily_pnl
-            positions = paper_broker.get_positions()
+            portfolio_value = await paper_broker.get_portfolio_value(current_prices)
+            daily_pnl = await paper_broker.get_daily_pnl()
+            positions = await paper_broker.get_positions()
 
             total_exposure = sum(
                 pos["quantity"] * current_prices.get(pos["symbol"], pos["avg_price"])
                 for pos in positions
             )
-            drawdown_pct = daily_pnl / paper_broker._initial_cash if paper_broker._initial_cash > 0 else 0.0
+            drawdown_pct = daily_pnl / _INITIAL_CASH if _INITIAL_CASH > 0 else 0.0
 
             # Publish metrics to Redis for dashboard consumption
             await redis.hset(RISK_METRICS_KEY, mapping={

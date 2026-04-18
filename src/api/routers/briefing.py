@@ -25,9 +25,9 @@ async def get_briefing() -> dict:
                 f"{fields.get('symbol','?')} @ {fields.get('confidence','?')} confidence"
             )
 
-        portfolio_val = paper_broker.get_portfolio_value()
-        daily_pnl = paper_broker._daily_pnl
-        n_positions = len(paper_broker.get_positions())
+        portfolio_val = await paper_broker.get_portfolio_value()
+        daily_pnl = await paper_broker.get_daily_pnl()
+        n_positions = len(await paper_broker.get_positions())
 
         prompt = (
             f"You are the Trading Floor morning briefing system. Today is {datetime.now(UTC).strftime('%A, %B %d %Y')}.\n\n"

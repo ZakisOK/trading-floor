@@ -30,15 +30,21 @@ async def _fetch_price(symbol: str) -> float | None:
 @router.get("/portfolio")
 async def get_portfolio() -> dict:
     """Portfolio summary — cash, positions value, total, daily P&L."""
-    total = paper_broker.get_portfolio_value()
-    cash = paper_broker._cash
+    cash = await paper_broker.get_cash()
+    positions = await paper_broker.get_positions()
+    prices: dict[str, float] = {}
+    for pos in positions:
+        price = await _fetch_price(pos["symbol"])
+        if price:
+            prices[pos["symbol"]] = price
+    total = await paper_broker.get_portfolio_value(prices)
     return {
         "cash": cash,
         "positions_value": total - cash,
         "total": total,
-        "daily_pnl": paper_broker._daily_pnl,
-        "trade_count": paper_broker._trade_count,
-        "win_rate": getattr(paper_broker, "_win_rate", 0.0),
+        "daily_pnl": await paper_broker.get_daily_pnl(),
+        "trade_count": await paper_broker.get_trade_count(),
+        "win_rate": 0.0,
     }
 
 
@@ -52,7 +58,7 @@ async def get_live_positions() -> list[dict]:
     - distance_to_stop_pct (how far price is above the stop)
     - distance_to_target_pct (how far price is below the target)
     """
-    positions = paper_broker.get_positions()
+    positions = await paper_broker.get_positions()
     if not positions:
         return []
 
@@ -107,13 +113,13 @@ async def get_risk_metrics() -> dict:
     redis = get_redis()
     raw = await redis.hgetall("risk:metrics")
     if not raw:
-        portfolio_value = paper_broker.get_portfolio_value()
+        portfolio_value = await paper_broker.get_portfolio_value()
         return {
-            "daily_pnl": paper_broker._daily_pnl,
+            "daily_pnl": await paper_broker.get_daily_pnl(),
             "portfolio_value": portfolio_value,
             "total_exposure": 0.0,
             "drawdown_pct": 0.0,
-            "open_positions": len(paper_broker.get_positions()),
+            "open_positions": len(await paper_broker.get_positions()),
             "updated_at": None,
         }
     return {k: (float(v) if k != "updated_at" and k != "open_positions" else v)

@@ -32,25 +32,27 @@ class KillRequest(BaseModel):
 @router.get("")
 async def list_orders() -> list[dict]:
     """List recent orders."""
-    return [o.to_dict() for o in paper_broker.get_orders(limit=50)]
+    orders = await paper_broker.get_orders(limit=50)
+    return [o.to_dict() for o in orders]
 
 
 @router.get("/positions")
 async def get_positions() -> list[dict]:
     """Get current open positions."""
-    return paper_broker.get_positions()
+    return await paper_broker.get_positions()
 
 
 @router.get("/portfolio")
 async def get_portfolio() -> dict:
     """Portfolio summary."""
-    total = paper_broker.get_portfolio_value()
+    cash = await paper_broker.get_cash()
+    total = await paper_broker.get_portfolio_value()
     return {
-        "cash": paper_broker._cash,
-        "positions_value": total - paper_broker._cash,
+        "cash": cash,
+        "positions_value": total - cash,
         "total": total,
-        "daily_pnl": paper_broker._daily_pnl,
-        "trade_count": paper_broker._trade_count,
+        "daily_pnl": await paper_broker.get_daily_pnl(),
+        "trade_count": await paper_broker.get_trade_count(),
     }
 
 
@@ -98,7 +100,7 @@ async def reject_signal(signal_id: str) -> dict:
 async def kill_switch(req: KillRequest) -> dict:
     """Activate the emergency kill switch and flatten all positions."""
     result = await activate_kill_switch(req.reason, req.operator_id)
-    paper_broker.flatten_all()
+    await paper_broker.flatten_all()
     return result
 
 
