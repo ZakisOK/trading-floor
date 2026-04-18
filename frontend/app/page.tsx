@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
+import { DeskStrip, PipelineFooter } from "@/components/DeskStrip";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const WS_URL = (API.replace(/^http/, "ws")) + "/ws/stream";
@@ -49,6 +50,8 @@ interface AgentPerf {
   color: string;
   elo: number;
   status: string;
+  current_task?: string | null;
+  last_heartbeat?: string | null;
 }
 interface StreamEvent {
   ts: string;
@@ -413,6 +416,9 @@ export default function MissionControlPage() {
           />
         </div>
 
+        {/* Three desks (from Firm Overview) */}
+        <DeskStrip agents={agents} />
+
         {/* Regime Intelligence Strip */}
         <div className="glass-panel" style={{ padding: "14px 20px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
@@ -706,6 +712,8 @@ export default function MissionControlPage() {
             )}
           </div>
         </div>
+
+        <PipelineFooter />
       </div>
 
       {/* ── Right sidebar ── */}
