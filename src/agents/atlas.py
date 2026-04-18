@@ -24,7 +24,7 @@ class AtlasAgent(BaseAgent):
         symbol = market.get("symbol", "UNKNOWN")
         direction = state.get("final_decision", "NEUTRAL")
         confidence = state.get("confidence", 0.0)
-        price = float(market.get("price") or 0.0)
+        price = float(market.get("price") or market.get("close") or 0.0)
 
         order_summary = f"{direction} {symbol} @ confidence {confidence:.2f}"
 
