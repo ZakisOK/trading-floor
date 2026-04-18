@@ -17,6 +17,7 @@ from src.api.routers.signals import router as signals_router
 from src.api.routers.llm import router as llm_router
 from src.api.routers.commodities import router as commodities_router
 from src.api.routers.desks import router as desks_router
+from src.api.routers.narrative import router as narrative_router
 from src.api.settings import router as settings_router
 from src.api.ws.handler import broadcast_loop, websocket_endpoint
 from src.core.config import settings
@@ -76,6 +77,7 @@ app.include_router(signals_router)
 app.include_router(llm_router)
 app.include_router(commodities_router)
 app.include_router(desks_router)
+app.include_router(narrative_router)
 app.include_router(settings_router)
 
 

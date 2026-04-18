@@ -5,6 +5,7 @@ import { DeskStrip, PipelineFooter } from "@/components/DeskStrip";
 import { LlmCostCard } from "@/components/LlmCostCard";
 import { ApprovalBanner } from "@/components/ApprovalBanner";
 import { DeskTasksPanel } from "@/components/DeskTasksPanel";
+import { NarrativeFeed } from "@/components/NarrativeFeed";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const WS_URL = (API.replace(/^http/, "ws")) + "/ws/stream";
@@ -117,22 +118,6 @@ function confidenceBar(conf: number) {
       </div>
       <span style={{ fontSize: 11, color }}>{pct}%</span>
     </div>
-  );
-}
-
-// ─── Sparkline ────────────────────────────────────────────────────────────────
-function Sparkline({ data, positive }: { data: number[]; positive: boolean }) {
-  if (data.length < 2) return <div style={{ height: 32 }} />;
-  const W = 80, H = 32;
-  const min = Math.min(...data), max = Math.max(...data), range = max - min || 1;
-  const pts = data.map((v, i) =>
-    `${(i / (data.length - 1)) * W},${H - ((v - min) / range) * H}`
-  ).join(" ");
-  const color = positive ? "var(--accent-profit)" : "var(--accent-loss)";
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: W, height: H }}>
-      <polyline points={pts} fill="none" stroke={color} strokeWidth={1.5} />
-    </svg>
   );
 }
 
@@ -681,11 +666,12 @@ export default function MissionControlPage() {
 
       {/* ── Right sidebar ── */}
       <div style={{
-        width: 220, minHeight: "100%", background: "var(--bg-base)",
+        width: 360, minHeight: "100%", background: "var(--bg-base)",
         borderLeft: "1px solid var(--border-subtle)", padding: "20px 14px",
         display: "flex", flexDirection: "column", gap: 16, overflowY: "auto",
         flexShrink: 0,
       }}>
+        <NarrativeFeed />
         {/* Asset class tabs */}
         <div style={{ display: "flex", gap: 4 }}>
           {ASSET_TABS.map(tab => (
@@ -725,35 +711,10 @@ export default function MissionControlPage() {
                   {sp.change_pct >= 0 ? "+" : ""}{fmt(sp.change_pct, 2)}%
                 </span>
               </div>
-              <Sparkline data={sp.history} positive={sp.change_pct >= 0} />
             </div>
           ))}
         </div>
 
-        {/* Top Polymarket signal */}
-        <div style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: 14 }}>
-          <div style={{ fontSize: 11, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
-            Polymarket Top Signal
-          </div>
-          <Link href="/polymarket" style={{ textDecoration: "none" }}>
-            <div style={{
-              padding: "10px 12px", borderRadius: 6, cursor: "pointer",
-              background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)",
-            }}>
-              <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 6 }}>
-                Fed rate cut by June?
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: 18, fontWeight: 700, color: "var(--accent-info)", fontFamily: "var(--font-mono, monospace)" }}>
-                  62%
-                </span>
-                <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
-                  $2.4M vol
-                </span>
-              </div>
-            </div>
-          </Link>
-        </div>
       </div>
     </div>
   );
