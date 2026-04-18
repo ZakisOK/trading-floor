@@ -409,9 +409,9 @@ export default function MissionControlPage() {
             sub="FRED: VIX · yield curve · DXY"
           />
           <KPICard
-            label="Signal Pipeline"
-            value={effectiveSignals != null ? `${effectiveSignals.toFixed(1)} eff.` : "—"}
-            sub={`10 parallel agents → PCA`}
+            label="Recent Signals"
+            value={signals.length > 0 ? `${signals.length}` : "—"}
+            sub={effectiveSignals != null ? `${effectiveSignals.toFixed(1)} eff. (PCA)` : "across all agents"}
             color="var(--accent-info)"
           />
         </div>
