@@ -1,202 +1,178 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-interface CopySignal {
+interface Signal {
+  id: string;
+  agent: string;
   symbol: string;
-  direction: string;
+  direction: "LONG" | "SHORT" | "NEUTRAL";
   confidence: number;
   thesis: string;
-  sources: string[];
-  binance_positions?: number;
-  whale_moves?: number;
-  cot_signal?: string;
-  score_breakdown?: Record<string, number>;
-  ts?: string;
+  ts: string;
 }
 
-interface WhaleMove {
-  wallet: string;
-  amount_xrp: number;
-  direction: string;
-  interpretation: string;
-  to_exchange: boolean;
-  from_exchange: boolean;
-  exchange: string;
-}
-
-interface BinanceTrader {
-  trader_uid: string;
-  roi_30d: number;
-  direction: string;
+interface SymbolConsensus {
   symbol: string;
-  leverage: number;
-  unrealized_pnl: number;
-}
-
-interface CotReading {
-  symbol: string;
-  name: string;
-  signal: string;
-  strength: number;
-  commercial_net: number;
-  commercial_net_pct: number;
-  speculator_net_pct: number;
-  reasoning: string;
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-function fmt(n: number | undefined | null, dec = 2) {
-  if (n == null || isNaN(n)) return "—";
-  return n.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec });
+  total: number;
+  long: number;
+  short: number;
+  neutral: number;
+  avgConfidence: number;
+  weightedDirection: "LONG" | "SHORT" | "NEUTRAL";
+  weightedScore: number;
+  agents: string[];
+  topThesis: Signal | null;
+  latestTs: string;
 }
 
 function directionColor(d: string) {
-  if (d === "LONG" || d === "BULLISH") return "var(--accent-profit)";
-  if (d === "SHORT" || d === "BEARISH") return "var(--accent-loss)";
+  if (d === "LONG") return "var(--accent-profit)";
+  if (d === "SHORT") return "var(--accent-loss)";
   return "var(--text-tertiary)";
 }
 
-function directionBadge(d: string) {
-  const color = directionColor(d);
+function timeAgo(iso: string): string {
+  if (!iso) return "—";
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60_000) return `${Math.floor(ms / 1000)}s ago`;
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
+  return `${Math.floor(ms / 86_400_000)}d ago`;
+}
+
+function formatAgent(id: string) {
+  if (!id) return "?";
+  if (id === "xrp_analyst") return "XRP Analyst";
+  if (id === "polymarket_scout") return "Polymarket";
+  if (id === "copy_trade_scout") return "Copy Scout";
+  return id.charAt(0).toUpperCase() + id.slice(1);
+}
+
+function buildConsensus(signals: Signal[]): SymbolConsensus[] {
+  const bySymbol = new Map<string, Signal[]>();
+  for (const s of signals) {
+    if (!bySymbol.has(s.symbol)) bySymbol.set(s.symbol, []);
+    bySymbol.get(s.symbol)!.push(s);
+  }
+
+  const out: SymbolConsensus[] = [];
+  for (const [symbol, arr] of bySymbol.entries()) {
+    const long = arr.filter((s) => s.direction === "LONG").length;
+    const short = arr.filter((s) => s.direction === "SHORT").length;
+    const neutral = arr.filter((s) => s.direction === "NEUTRAL").length;
+
+    const scoreSum = arr.reduce((acc, s) => {
+      if (s.direction === "LONG") return acc + s.confidence;
+      if (s.direction === "SHORT") return acc - s.confidence;
+      return acc;
+    }, 0);
+    const weightedScore = arr.length ? scoreSum / arr.length : 0;
+    const weightedDirection: SymbolConsensus["weightedDirection"] =
+      weightedScore > 0.15 ? "LONG" : weightedScore < -0.15 ? "SHORT" : "NEUTRAL";
+
+    const avgConfidence = arr.reduce((a, s) => a + s.confidence, 0) / arr.length;
+    const directional = arr.filter((s) => s.direction === weightedDirection);
+    const topThesis = (directional.length ? directional : arr).reduce(
+      (a, b) => (a.confidence > b.confidence ? a : b),
+    );
+
+    out.push({
+      symbol,
+      total: arr.length,
+      long,
+      short,
+      neutral,
+      avgConfidence,
+      weightedDirection,
+      weightedScore,
+      agents: Array.from(new Set(arr.map((s) => s.agent))),
+      topThesis,
+      latestTs: arr.reduce((a, b) => (a.ts > b.ts ? a : b)).ts,
+    });
+  }
+  out.sort((a, b) => Math.abs(b.weightedScore) - Math.abs(a.weightedScore));
+  return out;
+}
+
+function ConsensusBar({ long, short, neutral }: { long: number; short: number; neutral: number }) {
+  const total = long + short + neutral || 1;
   return (
-    <span style={{
-      display: "inline-block", padding: "2px 8px", borderRadius: 4,
-      fontSize: 11, fontWeight: 700, color,
-      background: `${color}22`,
-      border: `1px solid ${color}44`,
+    <div style={{ display: "flex", height: 6, borderRadius: 3, overflow: "hidden", background: "var(--border-subtle)" }}>
+      <div style={{ width: `${(long / total) * 100}%`, background: "var(--accent-profit)" }} />
+      <div style={{ width: `${(neutral / total) * 100}%`, background: "var(--text-tertiary)" }} />
+      <div style={{ width: `${(short / total) * 100}%`, background: "var(--accent-loss)" }} />
+    </div>
+  );
+}
+
+function SymbolCard({ c }: { c: SymbolConsensus }) {
+  const color = directionColor(c.weightedDirection);
+  return (
+    <div className="glass-panel" style={{
+      padding: "16px 18px", display: "flex", flexDirection: "column", gap: 12,
+      borderLeft: `3px solid ${color}`,
     }}>
-      {d}
-    </span>
-  );
-}
-
-function ConfidenceBar({ value }: { value: number }) {
-  const pct = Math.round(value * 100);
-  const color = value >= 0.75 ? "var(--accent-profit)" : value >= 0.55 ? "#f59e0b" : "var(--accent-loss)";
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <div style={{ flex: 1, height: 6, background: "var(--border-subtle)", borderRadius: 3, overflow: "hidden" }}>
-        <div style={{ width: `${pct}%`, height: "100%", background: color, borderRadius: 3, transition: "width 0.4s" }} />
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+          <span style={{ fontSize: 15, fontWeight: 700, color: "var(--text-primary)" }}>{c.symbol}</span>
+          <span style={{
+            fontSize: 10, fontWeight: 700, letterSpacing: "0.05em",
+            padding: "2px 7px", borderRadius: 3,
+            background: `${color}22`, color, border: `1px solid ${color}66`,
+          }}>
+            {c.weightedDirection}
+          </span>
+          <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>
+            {(c.avgConfidence * 100).toFixed(0)}% avg conf
+          </span>
+        </div>
+        <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>{timeAgo(c.latestTs)}</span>
       </div>
-      <span style={{ fontSize: 12, color, fontWeight: 700, minWidth: 36, textAlign: "right" }}>{pct}%</span>
+
+      <ConsensusBar long={c.long} short={c.short} neutral={c.neutral} />
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--text-tertiary)" }}>
+        <span style={{ color: "var(--accent-profit)" }}>{c.long} long</span>
+        <span>{c.neutral} neutral</span>
+        <span style={{ color: "var(--accent-loss)" }}>{c.short} short</span>
+      </div>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+        {c.agents.map((a) => (
+          <span key={a} style={{
+            fontSize: 9, padding: "1px 6px", borderRadius: 10,
+            background: "rgba(255,255,255,0.05)", color: "var(--text-secondary)",
+            border: "1px solid var(--border-subtle)",
+          }}>
+            {formatAgent(a)}
+          </span>
+        ))}
+      </div>
+
+      {c.topThesis && (
+        <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.45, paddingTop: 8, borderTop: "1px solid var(--border-subtle)" }}>
+          <div style={{ fontSize: 9, color: "var(--text-tertiary)", marginBottom: 4, letterSpacing: "0.05em", textTransform: "uppercase" }}>
+            Top thesis — {formatAgent(c.topThesis.agent)} · {(c.topThesis.confidence * 100).toFixed(0)}%
+          </div>
+          {c.topThesis.thesis.length > 200 ? c.topThesis.thesis.slice(0, 200) + "…" : c.topThesis.thesis}
+        </div>
+      )}
     </div>
   );
 }
 
-function CotGauge({ value, label }: { value: number; label: string }) {
-  // value: -50 to +50 (commercial net % OI)
-  const clamped = Math.max(-50, Math.min(50, value));
-  const pct = (clamped + 50) / 100 * 100; // 0-100%
-  const color = clamped > 0 ? "var(--accent-profit)" : clamped < -10 ? "var(--accent-loss)" : "#f59e0b";
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      <div style={{ fontSize: 10, color: "var(--text-tertiary)" }}>{label}</div>
-      <div style={{ position: "relative", height: 8, background: "var(--border-subtle)", borderRadius: 4, overflow: "hidden" }}>
-        {/* Center line */}
-        <div style={{
-          position: "absolute", left: "50%", top: 0, width: 1, height: "100%",
-          background: "rgba(255,255,255,0.15)",
-        }} />
-        <div style={{
-          position: "absolute",
-          left: clamped >= 0 ? "50%" : `${pct}%`,
-          width: `${Math.abs(clamped) / 100 * 100 / 2}%`,
-          height: "100%", background: color, borderRadius: 2,
-        }} />
-      </div>
-      <div style={{ fontSize: 11, color, fontWeight: 600 }}>
-        {clamped >= 0 ? "+" : ""}{fmt(clamped, 1)}% OI
-      </div>
-    </div>
-  );
-}
-
-// ─── Section header ───────────────────────────────────────────────────────────
-function SectionHeader({ title, sub }: { title: string; sub?: string }) {
-  return (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{ fontSize: 11, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 700 }}>
-        {title}
-      </div>
-      {sub && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 3 }}>{sub}</div>}
-    </div>
-  );
-}
-
-// ─── Mocked data (replace with real API endpoints when ready) ─────────────────
-const MOCK_COT: CotReading[] = [
-  {
-    symbol: "GC=F", name: "Gold", signal: "BULLISH", strength: 0.71,
-    commercial_net: 12400, commercial_net_pct: 4.2, speculator_net_pct: 18.5,
-    reasoning: "Commercials net LONG — rare signal. Speculators crowded long reduces conviction.",
-  },
-  {
-    symbol: "CL=F", name: "WTI Crude", signal: "BEARISH", strength: 0.52,
-    commercial_net: -145000, commercial_net_pct: -18.3, speculator_net_pct: 22.1,
-    reasoning: "Commercials heavily short. Speculators crowded long — fade risk on any supply surprise.",
-  },
-  {
-    symbol: "NG=F", name: "Natural Gas", signal: "BULLISH", strength: 0.63,
-    commercial_net: -28000, commercial_net_pct: -8.1, speculator_net_pct: -24.6,
-    reasoning: "Speculators historically crowded short. Short squeeze potential with any weather surprise.",
-  },
-  {
-    symbol: "ZC=F", name: "Corn", signal: "NEUTRAL", strength: 0.31,
-    commercial_net: -52000, commercial_net_pct: -12.4, speculator_net_pct: -5.2,
-    reasoning: "Commercial positioning in normal range. No extreme readings.",
-  },
-];
-
-const MOCK_WHALE_MOVES: WhaleMove[] = [
-  {
-    wallet: "rPT1Sjq2YG...", amount_xrp: 2_450_000, direction: "BULLISH",
-    interpretation: "2,450,000 XRP withdrawn FROM Binance — accumulation signal",
-    to_exchange: false, from_exchange: true, exchange: "Binance",
-  },
-  {
-    wallet: "rN7n3473Sa...", amount_xrp: 850_000, direction: "BEARISH",
-    interpretation: "850,000 XRP flowing TO Bitstamp — potential sell pressure",
-    to_exchange: true, from_exchange: false, exchange: "Bitstamp",
-  },
-  {
-    wallet: "r3kmLJN5D2...", amount_xrp: 1_200_000, direction: "NEUTRAL",
-    interpretation: "1,200,000 XRP whale-to-whale transfer",
-    to_exchange: false, from_exchange: false, exchange: "unknown",
-  },
-];
-
-const MOCK_BINANCE: BinanceTrader[] = [
-  { trader_uid: "a3f8b2...", roi_30d: 142.3, direction: "LONG", symbol: "XRPUSDT", leverage: 5, unrealized_pnl: 4820 },
-  { trader_uid: "c9d1e4...", roi_30d: 98.7, direction: "LONG", symbol: "XRPUSDT", leverage: 3, unrealized_pnl: 2100 },
-  { trader_uid: "f2a7c1...", roi_30d: 87.2, direction: "SHORT", symbol: "XRPUSDT", leverage: 2, unrealized_pnl: -340 },
-  { trader_uid: "b5e3d9...", roi_30d: 76.4, direction: "LONG", symbol: "XRPUSDT", leverage: 10, unrealized_pnl: 8900 },
-  { trader_uid: "e8g2h4...", roi_30d: 65.1, direction: "LONG", symbol: "XRPUSDT", leverage: 5, unrealized_pnl: 1250 },
-];
-
-// ─── Main page ────────────────────────────────────────────────────────────────
 export default function CopyTradePage() {
-  const [copySignals, setCopySignals] = useState<CopySignal[]>([]);
-  const [whaleMoves] = useState<WhaleMove[]>(MOCK_WHALE_MOVES);
-  const [binanceTraders] = useState<BinanceTrader[]>(MOCK_BINANCE);
-  const [cotReadings] = useState<CotReading[]>(MOCK_COT);
+  const [signals, setSignals] = useState<Signal[]>([]);
   const [loading, setLoading] = useState(true);
-  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [filter, setFilter] = useState<"all" | "crypto" | "commodity">("all");
 
   const fetchSignals = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/api/signals/recent?limit=20&type=copy_trade`);
-      const data = await res.json();
-      const signals = Array.isArray(data) ? data : data?.signals ?? [];
-      const copyOnly = signals.filter((s: CopySignal & { signal_type?: string }) =>
-        s.signal_type === "copy_trade"
-      );
-      setCopySignals(copyOnly.length > 0 ? copyOnly : []);
-      setLastUpdate(new Date());
-    } catch {
-      // API unavailable — show mock state
+      const r = await fetch(`${API}/api/signals/recent?limit=100`);
+      if (r.ok) setSignals(await r.json());
+    } catch (e) {
+      console.error("copy-trade fetch error:", e);
     } finally {
       setLoading(false);
     }
@@ -204,302 +180,100 @@ export default function CopyTradePage() {
 
   useEffect(() => {
     fetchSignals();
-    const interval = setInterval(fetchSignals, 15000); // 15s refresh
-    return () => clearInterval(interval);
+    const t = setInterval(fetchSignals, 5000);
+    return () => clearInterval(t);
   }, [fetchSignals]);
 
-  // Leaderboard summary
-  const longCount = binanceTraders.filter(t => t.direction === "LONG").length;
-  const shortCount = binanceTraders.filter(t => t.direction === "SHORT").length;
-  const longPct = Math.round(longCount / binanceTraders.length * 100);
+  const filteredSignals = useMemo(() => {
+    if (filter === "all") return signals;
+    const isCommodity = (s: string) => s.includes("=F") || !!s.match(/^(GC|CL|SI|HG|NG|ZW|ZC|ZS)/);
+    return signals.filter((s) =>
+      filter === "commodity" ? isCommodity(s.symbol) : !isCommodity(s.symbol),
+    );
+  }, [signals, filter]);
 
-  // Whale flow summary
-  const bullWhaleVol = whaleMoves
-    .filter(m => m.direction === "BULLISH")
-    .reduce((s, m) => s + m.amount_xrp, 0);
-  const bearWhaleVol = whaleMoves
-    .filter(m => m.direction === "BEARISH")
-    .reduce((s, m) => s + m.amount_xrp, 0);
+  const consensus = useMemo(() => buildConsensus(filteredSignals), [filteredSignals]);
+  const activeSymbols = consensus.length;
+  const longLeaning = consensus.filter((c) => c.weightedDirection === "LONG").length;
+  const shortLeaning = consensus.filter((c) => c.weightedDirection === "SHORT").length;
+  const recent = useMemo(() => [...filteredSignals].sort((a, b) => b.ts.localeCompare(a.ts)).slice(0, 20), [filteredSignals]);
 
   return (
-    <div style={{ flex: 1, overflowY: "auto", padding: "28px 28px" }}>
-      {/* Page header */}
-      <div style={{ marginBottom: 28 }}>
-        <div style={{ fontSize: 22, fontWeight: 800, color: "var(--text-primary)", marginBottom: 4 }}>
-          Copy Trade Intelligence
-        </div>
-        <div style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-          Binance leaderboard · XRPL whale tracking · COT smart money
-          {lastUpdate && (
-            <span style={{ marginLeft: 16, fontSize: 11, color: "var(--text-tertiary)" }}>
-              Last updated {lastUpdate.toLocaleTimeString()}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Summary KPIs */}
-      <div style={{ display: "flex", gap: 12, marginBottom: 24, flexWrap: "wrap" }}>
-        {[
-          {
-            label: "Binance Top Traders",
-            value: `${longPct}% LONG`,
-            color: longPct > 60 ? "var(--accent-profit)" : longPct < 40 ? "var(--accent-loss)" : "var(--text-primary)",
-            sub: `${longCount} long / ${shortCount} short of top ${binanceTraders.length} traders`,
-          },
-          {
-            label: "XRPL Whale Flow",
-            value: bullWhaleVol > bearWhaleVol ? "Net Bullish" : "Net Bearish",
-            color: bullWhaleVol > bearWhaleVol ? "var(--accent-profit)" : "var(--accent-loss)",
-            sub: `${(bullWhaleVol / 1_000_000).toFixed(1)}M XRP withdrawn vs ${(bearWhaleVol / 1_000_000).toFixed(1)}M to exchanges`,
-          },
-          {
-            label: "COT Smart Money",
-            value: cotReadings.filter(c => c.signal === "BULLISH").length > cotReadings.filter(c => c.signal === "BEARISH").length
-              ? "Net Bullish" : "Mixed",
-            color: "var(--text-primary)",
-            sub: `${cotReadings.filter(c => c.signal === "BULLISH").length} bullish / ${cotReadings.filter(c => c.signal === "BEARISH").length} bearish commodities`,
-          },
-          {
-            label: "Active Copy Signals",
-            value: String(copySignals.length),
-            color: copySignals.length > 0 ? "var(--accent-info)" : "var(--text-secondary)",
-            sub: "Signals meeting minimum confidence",
-          },
-        ].map(card => (
-          <div key={card.label} className="glass-panel" style={{
-            flex: 1, minWidth: 180, padding: "16px 18px",
+    <div style={{ padding: "28px 32px", maxWidth: 1400, margin: "0 auto" }}>
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
+          <span style={{ fontSize: 22, fontWeight: 800, color: "var(--text-primary)", letterSpacing: "-0.02em" }}>
+            Signal Consensus
+          </span>
+          <span style={{
+            fontSize: 11, padding: "2px 8px", borderRadius: 3, fontWeight: 600,
+            background: "rgba(94,106,210,0.15)", color: "var(--accent-primary)",
+            letterSpacing: "0.05em", textTransform: "uppercase",
           }}>
-            <div style={{ fontSize: 10, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
-              {card.label}
-            </div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: card.color, marginBottom: 4, fontFamily: "var(--font-mono, monospace)" }}>
-              {card.value}
-            </div>
-            <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>{card.sub}</div>
-          </div>
-        ))}
+            Multi-Symbol
+          </span>
+        </div>
+        <p style={{ fontSize: 13, color: "var(--text-tertiary)", margin: 0 }}>
+          Live consensus across every symbol the agents cover. Weighted by confidence — stronger conviction counts more than raw agent count.
+        </p>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
-
-        {/* Binance leaderboard */}
-        <div className="glass-panel" style={{ padding: "20px" }}>
-          <SectionHeader
-            title="Binance Futures Leaderboard"
-            sub="Top traders by 30-day ROI — their XRP positions"
-          />
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-              <div style={{
-                flex: longPct, height: 6, background: "var(--accent-profit)", borderRadius: "3px 0 0 3px",
-                transition: "flex 0.4s",
-              }} />
-              <div style={{
-                flex: 100 - longPct, height: 6, background: "var(--accent-loss)", borderRadius: "0 3px 3px 0",
-              }} />
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
-              <span style={{ color: "var(--accent-profit)" }}>{longPct}% LONG ({longCount})</span>
-              <span style={{ color: "var(--accent-loss)" }}>{100 - longPct}% SHORT ({shortCount})</span>
-            </div>
-          </div>
-
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-            <thead>
-              <tr>
-                {["Trader", "30d ROI", "Position", "Leverage", "Unreal. P&L"].map(h => (
-                  <th key={h} style={{
-                    textAlign: "left", padding: "6px 0", color: "var(--text-tertiary)",
-                    fontWeight: 500, borderBottom: "1px solid var(--border-subtle)", fontSize: 11,
-                  }}>
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {binanceTraders.map((tr, i) => (
-                <tr key={i} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                  <td style={{ padding: "8px 0", fontFamily: "var(--font-mono, monospace)", fontSize: 11, color: "var(--text-tertiary)" }}>
-                    #{i + 1} {tr.trader_uid}
-                  </td>
-                  <td style={{ color: "var(--accent-profit)", fontWeight: 600 }}>
-                    +{fmt(tr.roi_30d, 1)}%
-                  </td>
-                  <td>
-                    <span style={{
-                      color: directionColor(tr.direction), fontWeight: 700,
-                      fontSize: 11,
-                    }}>
-                      {tr.direction}
-                    </span>
-                  </td>
-                  <td style={{ color: "var(--text-secondary)" }}>{tr.leverage}x</td>
-                  <td style={{
-                    color: tr.unrealized_pnl >= 0 ? "var(--accent-profit)" : "var(--accent-loss)",
-                    fontWeight: 600,
-                  }}>
-                    {tr.unrealized_pnl >= 0 ? "+" : ""}${fmt(tr.unrealized_pnl, 0)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <div style={{ marginTop: 10, fontSize: 10, color: "var(--text-tertiary)" }}>
-            Source: Binance Futures public leaderboard · Positions visible only if trader has enabled sharing
-          </div>
-        </div>
-
-        {/* XRPL whale tracking */}
-        <div className="glass-panel" style={{ padding: "20px" }}>
-          <SectionHeader
-            title="XRPL Whale Wallet Tracker"
-            sub="Large XRP movements (>500k XRP) from monitored wallets"
-          />
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {whaleMoves.map((move, i) => (
-              <div key={i} style={{
-                padding: "12px 14px", borderRadius: 8,
-                background: "rgba(255,255,255,0.03)",
-                border: `1px solid ${
-                  move.direction === "BULLISH" ? "rgba(34,197,94,0.2)" :
-                  move.direction === "BEARISH" ? "rgba(239,68,68,0.2)" :
-                  "var(--border-subtle)"
-                }`,
-              }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
-                  <div>
-                    <span style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 11, color: "var(--text-tertiary)" }}>
-                      {move.wallet}
-                    </span>
-                    {move.exchange !== "unknown" && (
-                      <span style={{
-                        marginLeft: 8, fontSize: 10, padding: "1px 6px", borderRadius: 3,
-                        background: "rgba(255,255,255,0.08)", color: "var(--text-secondary)",
-                      }}>
-                        {move.to_exchange ? "→" : "←"} {move.exchange}
-                      </span>
-                    )}
-                  </div>
-                  {directionBadge(move.direction)}
-                </div>
-                <div style={{
-                  fontSize: 16, fontWeight: 700, color: "var(--text-primary)",
-                  fontFamily: "var(--font-mono, monospace)", marginBottom: 4,
-                }}>
-                  {(move.amount_xrp / 1_000_000).toFixed(2)}M XRP
-                </div>
-                <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.5 }}>
-                  {move.interpretation}
-                </div>
-              </div>
-            ))}
-          </div>
-          <div style={{ marginTop: 10, fontSize: 10, color: "var(--text-tertiary)" }}>
-            Monitoring {8} wallets via XRPL public RPC · Exchange inflow = sell pressure · Outflow = accumulation
-          </div>
-        </div>
-      </div>
-
-      {/* COT Smart Money — full width */}
-      <div className="glass-panel" style={{ padding: "20px", marginBottom: 20 }}>
-        <SectionHeader
-          title="COT Smart Money — Commercial Hedger Positioning"
-          sub='Commitment of Traders report (CFTC, weekly). Commercials are the "smart money" in commodities — they know the physical market.'
-        />
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
-          {cotReadings.map(cot => (
-            <div key={cot.symbol} style={{
-              padding: "14px 16px", borderRadius: 8,
-              background: "rgba(255,255,255,0.03)",
-              border: `1px solid ${
-                cot.signal === "BULLISH" ? "rgba(34,197,94,0.2)" :
-                cot.signal === "BEARISH" ? "rgba(239,68,68,0.2)" :
-                "var(--border-subtle)"
-              }`,
+      <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 20 }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {(["all", "crypto", "commodity"] as const).map((f) => (
+            <button key={f} onClick={() => setFilter(f)} style={{
+              padding: "6px 14px", borderRadius: 4, fontSize: 12, fontWeight: 600,
+              border: `1px solid ${filter === f ? "var(--accent-primary)" : "var(--border-default)"}`,
+              background: filter === f ? "rgba(94,106,210,0.15)" : "transparent",
+              color: filter === f ? "var(--accent-primary)" : "var(--text-secondary)",
+              cursor: "pointer",
             }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)" }}>{cot.name}</div>
-                  <div style={{ fontSize: 10, color: "var(--text-tertiary)", fontFamily: "var(--font-mono, monospace)" }}>{cot.symbol}</div>
-                </div>
-                {directionBadge(cot.signal)}
-              </div>
-              <CotGauge value={cot.commercial_net_pct} label="Commercial net % OI" />
-              <div style={{ marginTop: 10 }}>
-                <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginBottom: 4 }}>Conviction</div>
-                <ConfidenceBar value={cot.strength} />
-              </div>
-              <div style={{ marginTop: 8, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.5 }}>
-                {cot.reasoning}
-              </div>
-              <div style={{ marginTop: 8, fontSize: 10, color: "var(--text-tertiary)" }}>
-                Spec net: {cot.speculator_net_pct >= 0 ? "+" : ""}{fmt(cot.speculator_net_pct, 1)}% OI
-              </div>
+              {f.charAt(0).toUpperCase() + f.slice(1)}
+            </button>
+          ))}
+        </div>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 18, fontSize: 11, color: "var(--text-tertiary)" }}>
+          <span>{activeSymbols} active</span>
+          <span style={{ color: "var(--accent-profit)" }}>{longLeaning} long-leaning</span>
+          <span style={{ color: "var(--accent-loss)" }}>{shortLeaning} short-leaning</span>
+          <span>{signals.length} signals</span>
+        </div>
+      </div>
+
+      {loading ? (
+        <div style={{ padding: 40, textAlign: "center", color: "var(--text-tertiary)" }}>Loading signals…</div>
+      ) : consensus.length === 0 ? (
+        <div style={{ padding: 40, textAlign: "center", color: "var(--text-tertiary)" }}>
+          No signals yet for this filter. Agents run every 2-5 min.
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 14, marginBottom: 28 }}>
+          {consensus.map((c) => <SymbolCard key={c.symbol} c={c} />)}
+        </div>
+      )}
+
+      <div className="glass-panel" style={{ padding: "18px 20px" }}>
+        <div style={{ fontSize: 11, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
+          Recent signals — chronological
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {recent.map((s) => (
+            <div key={s.id} style={{
+              display: "grid",
+              gridTemplateColumns: "70px 100px 100px 70px 1fr",
+              gap: 10, alignItems: "baseline", fontSize: 11, paddingBottom: 8,
+              borderBottom: "1px solid var(--border-subtle)",
+            }}>
+              <span style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono, monospace)" }}>{timeAgo(s.ts)}</span>
+              <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>{formatAgent(s.agent)}</span>
+              <span style={{ color: "var(--text-secondary)" }}>{s.symbol}</span>
+              <span style={{ fontWeight: 700, color: directionColor(s.direction) }}>{s.direction}</span>
+              <span style={{ color: "var(--text-secondary)", lineHeight: 1.45 }}>
+                {(s.confidence * 100).toFixed(0)}% · {s.thesis.length > 140 ? s.thesis.slice(0, 140) + "…" : s.thesis}
+              </span>
             </div>
           ))}
         </div>
-        <div style={{ marginTop: 12, fontSize: 10, color: "var(--text-tertiary)" }}>
-          Source: CFTC disaggregated futures report (public, free) · Released Fridays 3:30 PM ET · Refreshed every 6 hours
-        </div>
-      </div>
-
-      {/* Active copy signals from the pipeline */}
-      <div className="glass-panel" style={{ padding: "20px" }}>
-        <SectionHeader
-          title="Pipeline Copy Signals"
-          sub="Signals generated by CopyTradeScout that passed the minimum confidence threshold"
-        />
-        {loading ? (
-          <div style={{ fontSize: 13, color: "var(--text-tertiary)" }}>Loading…</div>
-        ) : copySignals.length === 0 ? (
-          <div style={{ fontSize: 13, color: "var(--text-tertiary)", padding: "16px 0" }}>
-            No copy signals currently active. The scout runs each 15-minute commodity cycle and 2-minute crypto cycle.
-          </div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {copySignals.map((sig, i) => (
-              <div key={i} style={{
-                padding: "14px 16px", borderRadius: 8,
-                background: "rgba(255,255,255,0.03)",
-                border: "1px solid var(--border-subtle)",
-              }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                    <span style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 14, fontWeight: 700 }}>{sig.symbol}</span>
-                    {directionBadge(sig.direction)}
-                  </div>
-                  <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-                    {sig.ts ? new Date(sig.ts).toLocaleTimeString() : ""}
-                  </span>
-                </div>
-                <ConfidenceBar value={sig.confidence} />
-                <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>
-                  {sig.thesis}
-                </div>
-                {sig.sources && sig.sources.length > 0 && (
-                  <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 3 }}>
-                    {sig.sources.map((src, j) => (
-                      <div key={j} style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-                        · {src}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {sig.score_breakdown && (
-                  <div style={{ marginTop: 8, display: "flex", gap: 12 }}>
-                    {Object.entries(sig.score_breakdown).map(([k, v]) => (
-                      <div key={k} style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-                        <span style={{ color: directionColor(k) }}>{k}</span> {(v * 100).toFixed(0)}%
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
       </div>
     </div>
   );
