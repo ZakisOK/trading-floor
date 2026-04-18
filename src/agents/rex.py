@@ -5,7 +5,7 @@ import json
 from datetime import UTC, datetime
 
 import structlog
-from anthropic import AsyncAnthropic
+from src.core.llm_costs import make_tracked_client
 
 from src.agents.base import BaseAgent, AgentState
 from src.core.config import settings
@@ -17,7 +17,7 @@ logger = structlog.get_logger()
 class RexAgent(BaseAgent):
     def __init__(self) -> None:
         super().__init__("rex", "Rex", "Sentiment Analyst")
-        self._client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        self._client = make_tracked_client(api_key=settings.anthropic_api_key)
 
     async def analyze(self, state: AgentState) -> AgentState:
         market = state.get("market_data") or {}

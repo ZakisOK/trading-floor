@@ -9,12 +9,12 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from src.core.redis import get_redis
 from src.data.feeds.ingestor import ohlcv_to_ws_message
-from src.streams.topology import AGENT_RESULTS, ALERTS, MARKET_DATA, PNL
+from src.streams.topology import AGENT_RESULTS, ALERTS, MARKET_DATA, PNL, SIGNALS_RAW, TRADES, AUDIT
 
 logger = structlog.get_logger()
 
 # Streams the broadcast consumer subscribes to
-_BROADCAST_STREAMS: list[str] = [MARKET_DATA, PNL, ALERTS, AGENT_RESULTS]
+_BROADCAST_STREAMS: list[str] = [MARKET_DATA, PNL, ALERTS, AGENT_RESULTS, SIGNALS_RAW, TRADES, AUDIT]
 _BROADCAST_GROUP = "cg:ws_broadcast"
 
 
@@ -112,12 +112,30 @@ async def broadcast_loop() -> None:
 
 def _fields_to_broadcast(stream: str, fields: dict[str, Any]) -> dict[str, Any] | None:
     """Convert stream fields to a typed WebSocket message."""
+    from datetime import UTC, datetime
+    ts = datetime.now(UTC).isoformat()
     if stream == MARKET_DATA:
         return ohlcv_to_ws_message(fields)
     if stream == ALERTS:
-        return {"type": "alert", **fields}
+        return {"type": "alert", "ts": ts, "stream": stream, "level": "warning",
+                "msg": fields.get("message") or fields.get("msg") or "alert", **fields}
     if stream == PNL:
-        return {"type": "pnl", **fields}
+        return {"type": "pnl", "ts": ts, "stream": stream, "level": "info",
+                "msg": f"{fields.get('symbol','?')} closed {fields.get('reason','')} pnl={fields.get('pnl','?')}", **fields}
     if stream == AGENT_RESULTS:
-        return {"type": "agent_result", **fields}
+        return {"type": "agent_result", "ts": ts, "stream": stream, "level": "info",
+                "msg": fields.get("message") or "agent_result", **fields}
+    if stream == SIGNALS_RAW:
+        agent = fields.get("agent_name") or fields.get("agent_id") or "?"
+        sym = fields.get("symbol", "?")
+        direction = fields.get("direction", "?")
+        conf = fields.get("confidence", "?")
+        return {"type": "signal", "ts": ts, "stream": stream, "level": "info",
+                "msg": f"{agent} \u2192 {direction} {sym} @ {conf}", **fields}
+    if stream == TRADES:
+        return {"type": "trade", "ts": ts, "stream": stream, "level": "info",
+                "msg": f"{fields.get('side','?')} {fields.get('symbol','?')} @ {fields.get('filled_price','?')}", **fields}
+    if stream == AUDIT:
+        return {"type": "audit", "ts": ts, "stream": stream, "level": "debug",
+                "msg": fields.get("event") or fields.get("action") or "audit", **fields}
     return None

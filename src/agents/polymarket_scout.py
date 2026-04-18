@@ -10,7 +10,7 @@ Examples:
 from src.agents.base import BaseAgent, AgentState
 from src.data.feeds.polymarket_feed import PolymarketFeed, PolymarketSignal
 from src.core.config import settings
-from anthropic import AsyncAnthropic
+from src.core.llm_costs import make_tracked_client
 import structlog
 
 logger = structlog.get_logger()
@@ -19,7 +19,7 @@ logger = structlog.get_logger()
 class PolymarketScoutAgent(BaseAgent):
     def __init__(self):
         super().__init__("polymarket_scout", "Polymarket Scout", "Prediction Market Analyst")
-        self._client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        self._client = make_tracked_client(api_key=settings.anthropic_api_key)
         self._feed = PolymarketFeed()
 
     async def get_market_conviction(self, symbol: str) -> dict:

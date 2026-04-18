@@ -1,4 +1,11 @@
-"""Market data ingestor — reads stream:market_data, upserts to TimescaleDB."""
+"""Market data ingestor — reads stream:market_data, upserts to TimescaleDB.
+
+Public helpers:
+    publish_ohlcv(ohlcv) — publish a parsed OHLCVSchema to stream:market_data
+    publish_bar(ohlcv)   — alias of publish_ohlcv, clearer name for schedulers
+    persist_ohlcv(ohlcv) — optional direct upsert into the Timescale hypertable
+                           (use when you want to skip the stream round-trip)
+"""
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -32,6 +39,41 @@ async def publish_ohlcv(ohlcv: OHLCVSchema) -> None:
             "volume": str(ohlcv.volume),
         },
     )
+
+
+# Public alias used by src.schedulers.cycle_runner so scheduler code reads cleanly.
+publish_bar = publish_ohlcv
+
+
+async def persist_ohlcv(
+    ohlcv: OHLCVSchema,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Upsert a single OHLCV bar into TimescaleDB.
+
+    Mirrors MarketDataIngestor.handle() but callable from any code path that
+    already has an OHLCVSchema in hand (for example the Alpaca feed callback
+    in the scheduler). Uses ON CONFLICT DO NOTHING against uq_ohlcv_bar to
+    remain idempotent for replays.
+    """
+    async with session_factory() as session:
+        stmt = (
+            insert(OHLCV)
+            .values(
+                symbol=ohlcv.symbol,
+                exchange=ohlcv.exchange,
+                timeframe=ohlcv.timeframe,
+                ts=ohlcv.ts,
+                open=ohlcv.open,
+                high=ohlcv.high,
+                low=ohlcv.low,
+                close=ohlcv.close,
+                volume=ohlcv.volume,
+            )
+            .on_conflict_do_nothing(constraint="uq_ohlcv_bar")
+        )
+        await session.execute(stmt)
+        await session.commit()
 
 
 class MarketDataIngestor(BaseConsumer):

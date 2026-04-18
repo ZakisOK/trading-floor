@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { DeskStrip, PipelineFooter } from "@/components/DeskStrip";
+import { LlmCostCard } from "@/components/LlmCostCard";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const WS_URL = (API.replace(/^http/, "ws")) + "/ws/stream";
@@ -471,8 +472,14 @@ export default function MissionControlPage() {
 
           {/* Active agent cycle */}
           <div className="glass-panel" style={{ padding: "18px 20px" }}>
-            <div style={{ fontSize: 11, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
-              Agent Cycle
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+              <div style={{ fontSize: 11, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                Live Agents
+              </div>
+              <div title="Green dot = agent is actively analyzing a symbol. Cycles auto-run every 2-5 min." style={{ fontSize: 10, color: "var(--text-tertiary)", cursor: "help" }}>?</div>
+            </div>
+            <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginBottom: 12, lineHeight: 1.4 }}>
+              Who&apos;s working right now. Cycles run automatically every 2-5 min.
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
               <div style={{
@@ -537,45 +544,8 @@ export default function MissionControlPage() {
             </div>
           </div>
 
-          {/* Copy trade signals */}
-          <div className="glass-panel" style={{ padding: "18px 20px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-              <div style={{ fontSize: 11, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                Copy Trade Signals
-              </div>
-              <Link href="/copy-trade" style={{ fontSize: 11, color: "var(--accent-info)", textDecoration: "none" }}>
-                View all →
-              </Link>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {copySignals.length === 0 ? (
-                <div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>No copy signals active</div>
-              ) : (
-                copySignals.map((cs, i) => (
-                  <div key={i} style={{
-                    padding: "8px 10px", borderRadius: 6,
-                    background: "rgba(255,255,255,0.03)",
-                    border: "1px solid var(--border-subtle)",
-                  }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
-                      <span style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 12, fontWeight: 700 }}>
-                        {cs.symbol}
-                      </span>
-                      <span style={{ fontSize: 12, fontWeight: 700, color: directionColor(cs.direction) }}>
-                        {cs.direction}
-                      </span>
-                    </div>
-                    {confidenceBar(cs.confidence)}
-                    <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 4 }}>
-                      {cs.binance_positions != null && `${cs.binance_positions} Binance traders`}
-                      {cs.whale_moves != null && cs.whale_moves > 0 && ` · ${cs.whale_moves} whale moves`}
-                      {cs.cot_signal && cs.cot_signal !== "N/A" && ` · COT: ${cs.cot_signal}`}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
+          {/* LLM Cost tile */}
+          <LlmCostCard />
         </div>
 
         {/* Row 3: Positions + Agent performance */}
@@ -650,13 +620,16 @@ export default function MissionControlPage() {
 
           {/* Agent performance mini-table */}
           <div className="glass-panel" style={{ padding: "18px 20px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
               <div style={{ fontSize: 11, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                Agent Performance
+                Agent ELO
               </div>
               <Link href="/agents" style={{ fontSize: 11, color: "var(--accent-info)", textDecoration: "none" }}>
                 Details →
               </Link>
+            </div>
+            <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginBottom: 12, lineHeight: 1.4 }}>
+              Chess-style rating. Everyone starts at 1200. <span style={{ color: "var(--accent-profit)" }}>+16</span> when a position they supported closes in profit, <span style={{ color: "var(--accent-loss)" }}>-16</span> on a loss.
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {agents.length === 0 ? (

@@ -5,7 +5,7 @@ and macro signals (Fed policy, Ripple legal status) for XRP-specific thesis gene
 from src.agents.base import BaseAgent, AgentState
 from src.data.feeds.xrpl_feed import XRPLFeed
 from src.core.config import settings
-from anthropic import AsyncAnthropic
+from src.core.llm_costs import make_tracked_client
 import structlog
 
 logger = structlog.get_logger()
@@ -25,7 +25,7 @@ Key XRP fundamentals to consider:
 class XRPAnalystAgent(BaseAgent):
     def __init__(self):
         super().__init__("xrp_analyst", "XRP Analyst", "XRP Specialist")
-        self._client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        self._client = make_tracked_client(api_key=settings.anthropic_api_key)
         self._xrpl_feed = XRPLFeed()
 
     async def analyze(self, state: AgentState) -> AgentState:

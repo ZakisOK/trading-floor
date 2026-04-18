@@ -1,4 +1,4 @@
-﻿"""
+"""
 Commodities Analyst Agent â€” multi-asset commodity specialist.
 
 Activates for any Yahoo Finance futures symbol (GC=F, CL=F, NG=F, etc.).
@@ -19,7 +19,7 @@ import json
 import logging
 from datetime import date
 
-from anthropic import AsyncAnthropic
+from src.core.llm_costs import make_tracked_client
 
 from src.agents.base import BaseAgent, AgentState
 from src.core.config import settings
@@ -153,7 +153,7 @@ class CommoditiesAnalystAgent(BaseAgent):
 
     def __init__(self) -> None:
         super().__init__("commodities_analyst", "Commodities Analyst", "Commodity Specialist")
-        self._client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        self._client = make_tracked_client(api_key=settings.anthropic_api_key)
         self._feed = CommoditiesFeed()
 
     def _is_commodity(self, symbol: str) -> bool:

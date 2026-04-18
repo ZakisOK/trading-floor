@@ -11,7 +11,7 @@ router = APIRouter(prefix="/api/briefing", tags=["briefing"])
 async def get_briefing() -> dict:
     """Generate AI morning briefing using available data."""
     try:
-        from anthropic import AsyncAnthropic
+        from src.core.llm_costs import make_tracked_client
         from src.core.config import settings
         from src.core.redis import get_redis
         from src.execution.broker import paper_broker
@@ -37,7 +37,7 @@ async def get_briefing() -> dict:
             '{"summary": "...", "key_risks": ["..."], "opportunities": ["..."], "recommendation": "..."}'
         )
 
-        client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        client = make_tracked_client(api_key=settings.anthropic_api_key)
         resp = await client.messages.create(
             model="claude-haiku-4-5-20251001", max_tokens=400,
             messages=[{"role": "user", "content": prompt}],

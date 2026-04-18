@@ -1,5 +1,7 @@
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Annotated
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -16,7 +18,7 @@ class Settings(BaseSettings):
     environment: str = "development"
     log_level: str = "INFO"
     secret_key: str = "change_me"
-    allowed_origins: list[str] = ["http://localhost:3000"]
+    allowed_origins: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
     trading_mode: str = "paper"
     autonomy_mode: str = "COMMANDER"
     max_risk_per_trade: float = 0.02
@@ -41,6 +43,40 @@ class Settings(BaseSettings):
     position_monitor_interval_seconds: int = 5
     risk_monitor_interval_seconds: int = 30
     trailing_stop_trigger_pct: float = 0.05
+
+    # Alpaca MCP + broker
+    alpaca_api_key: str = ""
+    alpaca_secret_key: str = ""
+    alpaca_base_url: str = "https://paper-api.alpaca.markets"
+    alpaca_paper_trade: bool = True
+    alpaca_toolsets: str = (
+        "account,positions,stock_data,crypto_data,options_data,watchlists,assets,news"
+    )
+
+    # DigitalOcean MCP
+    digitalocean_api_token: str = ""
+
+    # Memory / Learning Stack
+    graphiti_url: str = "http://graphiti:8000"
+    zep_api_secret: str = "change_me_local_only"
+    openai_api_key: str = ""
+    phoenix_collector_endpoint: str = "http://phoenix:6006"
+
+    # Neo4j (Graphiti backend)
+    neo4j_uri: str = "bolt://neo4j:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = "change_me_local_only"
+
+    @field_validator("allowed_origins", mode="before")
+    @classmethod
+    def _split_allowed_origins(cls, v: object) -> object:
+        """Accept comma-separated strings in addition to JSON arrays."""
+        if isinstance(v, str):
+            s = v.strip()
+            if s.startswith("["):
+                return v
+            return [origin.strip() for origin in s.split(",") if origin.strip()]
+        return v
 
 
 settings = Settings()

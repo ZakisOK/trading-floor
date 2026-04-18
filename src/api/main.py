@@ -14,6 +14,7 @@ from src.api.routers.orders import router as orders_router
 from src.api.routers.briefing import router as briefing_router
 from src.api.routers.execution import router as execution_router
 from src.api.routers.signals import router as signals_router
+from src.api.routers.llm import router as llm_router
 from src.api.settings import router as settings_router
 from src.api.ws.handler import broadcast_loop, websocket_endpoint
 from src.core.config import settings
@@ -70,6 +71,7 @@ app.include_router(orders_router)
 app.include_router(briefing_router)
 app.include_router(execution_router)
 app.include_router(signals_router)
+app.include_router(llm_router)
 app.include_router(settings_router)
 
 

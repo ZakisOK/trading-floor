@@ -17,7 +17,7 @@ import logging
 from datetime import datetime, UTC
 from typing import Any
 
-from anthropic import AsyncAnthropic
+from src.core.llm_costs import make_tracked_client
 
 from src.agents.base import BaseAgent, AgentState
 from src.core.config import settings
@@ -87,7 +87,7 @@ class MacroAnalystAgent(BaseAgent):
 
     def __init__(self) -> None:
         super().__init__("macro_analyst", "Macro Analyst", "Macro Economist")
-        self._client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        self._client = make_tracked_client(api_key=settings.anthropic_api_key)
         self._feed = FREDFeed()
 
     async def _cache_snapshot(self, snapshot: dict) -> None:

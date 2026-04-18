@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import structlog
-from anthropic import AsyncAnthropic
+from src.core.llm_costs import make_tracked_client
 
 from src.agents.base import BaseAgent, AgentState
 from src.core.config import settings
@@ -16,7 +16,7 @@ logger = structlog.get_logger()
 class ScoutAgent(BaseAgent):
     def __init__(self) -> None:
         super().__init__("scout", "Scout", "Opportunities Agent")
-        self._client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        self._client = make_tracked_client(api_key=settings.anthropic_api_key)
 
     async def scan_opportunities(
         self,

@@ -143,8 +143,8 @@ class COTAnalystAgent(BaseAgent):
     ) -> tuple[str, float, str]:
         """Call Claude Haiku with COT context. Returns (direction, confidence, thesis)."""
         try:
-            from anthropic import AsyncAnthropic
-            client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+            from src.core.llm_costs import make_tracked_client
+            client = make_tracked_client(api_key=settings.anthropic_api_key)
 
             signal_label = cot.get("signal", "NEUTRAL")
             percentile = cot.get("percentile_52w", 50)

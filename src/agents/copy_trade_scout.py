@@ -1,4 +1,4 @@
-﻿"""
+"""
 Copy Trade Scout â€” monitors public trader positions and generates copy signals.
 
 Sources:
