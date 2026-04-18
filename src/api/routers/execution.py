@@ -94,6 +94,8 @@ async def get_live_positions() -> list[dict]:
 
         enriched.append({
             **pos,
+            "size": pos["quantity"],
+            "entry_price": avg_price,
             "current_price": round(current_price, 6),
             "unrealized_pnl": round(unrealized_pnl, 4),
             "unrealized_pnl_pct": round(unrealized_pnl_pct, 6),

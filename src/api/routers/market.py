@@ -21,7 +21,7 @@ _VALID_TIMEFRAMES = {"1m", "5m", "15m", "30m", "1h", "4h", "1D", "1W"}
 @router.get("/ohlcv/{symbol}", response_model=list[OHLCVResponse])
 async def get_ohlcv(
     symbol: str,
-    exchange: Annotated[str, Query()] = "binance",
+    exchange: Annotated[str, Query()] = "coinbase",
     timeframe: Annotated[str, Query()] = "1h",
     limit: Annotated[int, Query(ge=1, le=5000)] = 200,
     before: Annotated[datetime | None, Query()] = None,

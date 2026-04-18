@@ -211,7 +211,7 @@ function EquityCurve({ data }: { data: number[] }) {
 
 export default function BacktestPage() {
   const [symbol, setSymbol] = useState("BTC/USDT");
-  const [exchange, setExchange] = useState("binance");
+  const [exchange, setExchange] = useState("coinbase");
   const [timeframe, setTimeframe] = useState("1h");
   const [strategy, setStrategy] = useState("sma_crossover");
   const [hours, setHours] = useState(168);
@@ -271,7 +271,7 @@ export default function BacktestPage() {
               </select></div>
             <div><label style={labelStyle}>Exchange</label>
               <select style={inputStyle} value={exchange} onChange={e => setExchange(e.target.value)}>
-                {["binance","coinbase","kraken"].map(s => <option key={s}>{s}</option>)}
+                {["coinbase","kraken"].map(s => <option key={s}>{s}</option>)}
               </select></div>
             <div><label style={labelStyle}>Timeframe</label>
               <select style={inputStyle} value={timeframe} onChange={e => setTimeframe(e.target.value)}>

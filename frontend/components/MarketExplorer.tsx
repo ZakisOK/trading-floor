@@ -10,7 +10,7 @@ import { ExchangeSelector, type ExchangeId } from "./ExchangeSelector";
 import { DataFeedStatus } from "./DataFeedStatus";
 
 const DEFAULT_SYMBOL = "BTC/USDT";
-const DEFAULT_EXCHANGE: ExchangeId = "binance";
+const DEFAULT_EXCHANGE: ExchangeId = "coinbase";
 const DEFAULT_TIMEFRAME: Timeframe = "1h";
 
 export function MarketExplorer() {

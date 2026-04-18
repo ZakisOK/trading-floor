@@ -279,7 +279,7 @@ class PaperBroker:
     async def get_orders(self, limit: int = 100) -> list[Order]:
         await _ensure_initialized()
         raw = await get_redis().lrange(_K_ORDERS, 0, max(0, limit - 1))
-        return [Order(**_order_from_json(item)) for item in raw]
+        return [Order(**_order_from_json(json.loads(item))) for item in raw]
 
     async def _push_order(self, order: Order) -> None:
         redis = get_redis()

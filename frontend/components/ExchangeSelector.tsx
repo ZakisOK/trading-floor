@@ -1,7 +1,6 @@
 "use client";
 
 const EXCHANGES = [
-  { id: "binance", label: "Binance", class: "crypto" },
   { id: "coinbase", label: "Coinbase", class: "crypto" },
   { id: "kraken", label: "Kraken", class: "crypto" },
   { id: "alpaca", label: "Alpaca", class: "equity" },
