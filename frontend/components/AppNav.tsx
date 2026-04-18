@@ -26,8 +26,6 @@ const NAV_GROUPS: NavGroup[] = [
   {
     group: "Intelligence",
     items: [
-      { href: "/agents",      label: "Agents",        icon: "🤖" },
-      { href: "/copy-trade",  label: "Signal Consensus", icon: "📊" },
       { href: "/floor",       label: "Trading Floor", icon: "🏢" },
       { href: "/risk",        label: "Risk",          icon: "🛡" },
       { href: "/execution",   label: "Execution",     icon: "⚡" },
