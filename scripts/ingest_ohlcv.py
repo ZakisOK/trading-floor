@@ -30,13 +30,13 @@ logger = structlog.get_logger()
 DEFAULT_SYMBOLS = [
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT",
     "ADA/USDT", "AVAX/USDT", "DOGE/USDT", "LINK/USDT",
-    "DOT/USDT", "MATIC/USDT", "UNI/USDT",
+    "DOT/USDT", "UNI/USDT",
+    # MATIC delisted on Coinbase (Polygon rebrand to POL) \u2014 skip
 ]
 
-# ccxt timeframe → seconds
+# ccxt timeframe → seconds (Coinbase-supported only)
 _TF_SECONDS = {
-    "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
-    "1h": 3600, "4h": 14400, "1d": 86400,
+    "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "6h": 21600, "1d": 86400,
 }
 
 

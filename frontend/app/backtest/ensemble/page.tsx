@@ -49,7 +49,7 @@ interface EnsembleResult {
 const SYMBOLS = [
   "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT",
   "ADA/USDT", "AVAX/USDT", "DOGE/USDT", "LINK/USDT",
-  "DOT/USDT", "MATIC/USDT", "UNI/USDT",
+  "DOT/USDT", "UNI/USDT",
 ];
 
 function fmt(n: number | null | undefined, dec = 2) {
@@ -164,7 +164,7 @@ export default function EnsembleBacktestPage() {
             <label style={labelStyle}>Timeframe</label>
             <select style={inputStyle} value={timeframe} onChange={(e) => setTimeframe(e.target.value)}>
               <option value="1d">1d — cheap, fast</option>
-              <option value="4h">4h</option>
+              <option value="6h">6h</option>
               <option value="1h">1h — expensive</option>
             </select>
           </div>
