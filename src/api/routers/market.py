@@ -18,6 +18,30 @@ _poly_feed = PolymarketFeed()
 _VALID_TIMEFRAMES = {"1m", "5m", "15m", "30m", "1h", "4h", "1D", "1W"}
 
 
+@router.get("/prices")
+async def get_prices(symbols: str | None = None) -> dict:
+    """Return latest prices for a comma-separated list of symbols. Handles crypto + futures."""
+    import asyncio
+    from src.data.feeds.price_source import fetch_price
+    from src.data.feeds.commodity_source import fetch_quote as fetch_commodity_quote
+    if not symbols:
+        symbols_list = ["BTC/USDT", "ETH/USDT", "XRP/USDT", "SOL/USDT",
+                        "GC=F", "CL=F", "SI=F", "NG=F"]
+    else:
+        symbols_list = [s.strip() for s in symbols.split(",") if s.strip()]
+
+    async def one(sym: str) -> dict:
+        if sym.endswith("=F") or sym.startswith(("GC", "CL", "SI", "HG", "NG", "ZW", "ZC", "ZS")):
+            q = await fetch_commodity_quote(sym)
+            if q:
+                return {"symbol": sym, "price": q["last"], "change_pct": q["change_pct"]}
+        p = await fetch_price(sym)
+        return {"symbol": sym, "price": p, "change_pct": None}
+
+    results = await asyncio.gather(*[one(s) for s in symbols_list], return_exceptions=True)
+    return {"prices": [r for r in results if isinstance(r, dict)]}
+
+
 @router.get("/ohlcv/{symbol:path}", response_model=list[OHLCVResponse])
 async def get_ohlcv(
     symbol: str,

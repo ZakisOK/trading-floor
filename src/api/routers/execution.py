@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api/execution", tags=["execution"])
 
 @router.get("/portfolio")
 async def get_portfolio() -> dict:
-    """Portfolio summary — cash, positions value, total, daily P&L."""
+    """Portfolio summary — cash, positions value, total, daily P&L, win rate from closed trades."""
     cash = await paper_broker.get_cash()
     positions = await paper_broker.get_positions()
     prices: dict[str, float] = {}
@@ -24,13 +24,44 @@ async def get_portfolio() -> dict:
         if price:
             prices[pos["symbol"]] = price
     total = await paper_broker.get_portfolio_value(prices)
+
+    # Win rate = wins / (wins + losses) across closed trades
+    orders = await paper_broker.get_orders(limit=500)
+    o_list = [o.to_dict() for o in orders]
+    by_symbol: dict[str, list[dict]] = {}
+    for o in sorted(o_list, key=lambda x: x["filled_at"] or x["created_at"] or ""):
+        by_symbol.setdefault(o["symbol"], []).append(o)
+    wins = losses = 0
+    closed_pnl_sum = 0.0
+    for sym_orders in by_symbol.values():
+        buys: list[dict] = []
+        for o in sym_orders:
+            if o["status"] != "FILLED":
+                continue
+            if o["side"] == "BUY":
+                buys.append(o)
+            elif o["side"] == "SELL" and buys:
+                entry = buys.pop(0)
+                pnl = (float(o.get("filled_price") or 0) - float(entry.get("filled_price") or 0)) * float(o.get("quantity") or 0)
+                closed_pnl_sum += pnl
+                if pnl > 0:
+                    wins += 1
+                elif pnl < 0:
+                    losses += 1
+    total_closed = wins + losses
+    win_rate = wins / total_closed if total_closed else 0.0
+
     return {
         "cash": cash,
         "positions_value": total - cash,
         "total": total,
         "daily_pnl": await paper_broker.get_daily_pnl(),
         "trade_count": await paper_broker.get_trade_count(),
-        "win_rate": 0.0,
+        "win_rate": win_rate,
+        "closed_trades": total_closed,
+        "wins": wins,
+        "losses": losses,
+        "closed_pnl_total": round(closed_pnl_sum, 4),
     }
 
 

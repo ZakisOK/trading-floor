@@ -303,43 +303,40 @@ export default function MissionControlPage() {
     };
   }, []);
 
-  // 5-second polling fallback + initial load
+  // Polling + initial load. Fast tick (2s) so the dashboard feels live.
   useEffect(() => {
     fetchAll();
-    const interval = setInterval(fetchAll, 5000);
+    const interval = setInterval(fetchAll, 2000);
     return () => clearInterval(interval);
   }, [fetchAll]);
 
-  // Mock sparkline data for sidebar (replace with real price history endpoint)
+  // Real prices in sidebar from /api/market/prices. Polls every 15s.
   useEffect(() => {
-    const generate = (base: number, vol: number) =>
-      Array.from({ length: 20 }, (_, i) => base + (Math.random() - 0.5) * vol * (i / 20 + 0.5));
-
-    const mocks: Record<string, { base: number; vol: number; change: number }> = {
-      "XRP/USDT": { base: 0.62, vol: 0.04, change: 2.3 },
-      "BTC/USDT": { base: 67400, vol: 1200, change: -0.8 },
-      "ETH/USDT": { base: 3480, vol: 150, change: 1.1 },
-      "SOL/USDT": { base: 182, vol: 8, change: 3.2 },
-      "GC=F": { base: 2340, vol: 25, change: 0.6 },
-      "CL=F": { base: 79.4, vol: 1.5, change: -1.2 },
-      "NG=F": { base: 2.18, vol: 0.15, change: 4.1 },
-      "SI=F": { base: 28.6, vol: 0.8, change: 1.9 },
-      "SPY": { base: 528, vol: 6, change: 0.4 },
-      "QQQ": { base: 447, vol: 8, change: 0.7 },
-      "VIX": { base: 16.4, vol: 1.2, change: -5.2 },
+    const fetchPrices = async () => {
+      const allSyms = Object.values(SIDEBAR_PRICES).flat().map(x => x.symbol);
+      try {
+        const r = await fetch(`${API}/api/market/prices?symbols=${encodeURIComponent(allSyms.join(","))}`);
+        if (!r.ok) return;
+        const d = await r.json();
+        const byS = new Map<string, { price: number | null; change_pct: number | null }>();
+        for (const p of d.prices || []) byS.set(p.symbol, { price: p.price, change_pct: p.change_pct });
+        const merged: SparkPrice[] = allSyms.map((sym) => {
+          const { name } = Object.values(SIDEBAR_PRICES).flat().find(x => x.symbol === sym)!;
+          const hit = byS.get(sym);
+          return {
+            symbol: sym,
+            name,
+            price: hit?.price ?? 0,
+            change_pct: (hit?.change_pct ?? 0) * (hit?.change_pct != null ? 100 : 0),
+            history: [],
+          };
+        });
+        setSparkPrices(merged);
+      } catch {}
     };
-
-    const all = Object.values(SIDEBAR_PRICES).flat().map(({ symbol, name, ticker }) => {
-      const m = mocks[symbol] ?? { base: 100, vol: 2, change: 0 };
-      return {
-        symbol,
-        name,
-        price: m.base,
-        change_pct: m.change,
-        history: generate(m.base, m.vol),
-      };
-    });
-    setSparkPrices(all);
+    fetchPrices();
+    const iv = setInterval(fetchPrices, 15_000);
+    return () => clearInterval(iv);
   }, []);
 
   const currentTabPrices = sparkPrices.filter(p =>

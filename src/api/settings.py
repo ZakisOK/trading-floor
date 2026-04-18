@@ -79,6 +79,7 @@ async def get_settings() -> dict[str, Any]:
         "max_position_size_pct": float(system_raw.get("max_position_size_pct", "5.0")),
         "trailing_stop_pct": float(system_raw.get("trailing_stop_pct", "5.0")),
         "kill_switch_enabled": system_raw.get("kill_switch_enabled", "false"),
+        "autonomy_mode": system_raw.get("autonomy_mode", "COMMANDER"),
     }
 
     # Exchange configs (keys masked)
