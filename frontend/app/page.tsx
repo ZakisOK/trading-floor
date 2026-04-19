@@ -6,6 +6,7 @@ import { LlmCostCard } from "@/components/LlmCostCard";
 import { ApprovalBanner } from "@/components/ApprovalBanner";
 import { DeskTasksPanel } from "@/components/DeskTasksPanel";
 import { NarrativeFeed } from "@/components/NarrativeFeed";
+import { RunningPnL } from "@/components/RunningPnL";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const WS_URL = (API.replace(/^http/, "ws")) + "/ws/stream";
@@ -394,6 +395,9 @@ export default function MissionControlPage() {
 
         {/* Task queue + in-flight + recent completions */}
         <DeskTasksPanel />
+
+        {/* Running P&L chart */}
+        <RunningPnL />
 
         {/* Regime Intelligence Strip */}
         <div className="glass-panel" style={{ padding: "14px 20px" }}>

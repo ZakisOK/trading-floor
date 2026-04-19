@@ -8,6 +8,7 @@ so the dashboard always has fresh risk metrics without hitting the DB.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, UTC
 
 import structlog
@@ -100,6 +101,32 @@ async def run() -> None:
             )
             drawdown_pct = daily_pnl / _INITIAL_CASH if _INITIAL_CASH > 0 else 0.0
 
+            # Realized P&L: sum of closed-trade P&L (from order history)
+            orders_list = [o.to_dict() for o in await paper_broker.get_orders(limit=500)]
+            by_sym: dict[str, list[dict]] = {}
+            for o in sorted(orders_list, key=lambda x: x["filled_at"] or x["created_at"] or ""):
+                by_sym.setdefault(o["symbol"], []).append(o)
+            realized_pnl = 0.0
+            for sym_orders in by_sym.values():
+                buys: list[dict] = []
+                for o in sym_orders:
+                    if o["status"] != "FILLED":
+                        continue
+                    if o["side"] == "BUY":
+                        buys.append(o)
+                    elif o["side"] == "SELL" and buys:
+                        entry = buys.pop(0)
+                        realized_pnl += (float(o.get("filled_price") or 0) - float(entry.get("filled_price") or 0)) * float(o.get("quantity") or 0)
+
+            # Unrealized P&L: mark-to-market open positions
+            unrealized_pnl = 0.0
+            for pos in positions:
+                price = current_prices.get(pos["symbol"], pos["avg_price"])
+                unrealized_pnl += (price - pos["avg_price"]) * pos["quantity"]
+
+            total_pnl = realized_pnl + unrealized_pnl
+            snapshot_ts = datetime.now(UTC).isoformat()
+
             # Publish metrics to Redis for dashboard consumption
             await redis.hset(RISK_METRICS_KEY, mapping={
                 "daily_pnl": str(round(daily_pnl, 4)),
@@ -107,8 +134,23 @@ async def run() -> None:
                 "total_exposure": str(round(total_exposure, 4)),
                 "drawdown_pct": str(round(drawdown_pct, 6)),
                 "open_positions": str(len(positions)),
-                "updated_at": datetime.now(UTC).isoformat(),
+                "realized_pnl": str(round(realized_pnl, 4)),
+                "unrealized_pnl": str(round(unrealized_pnl, 4)),
+                "total_pnl": str(round(total_pnl, 4)),
+                "updated_at": snapshot_ts,
             })
+
+            # Append a snapshot to the running P&L history (keep last 1440 = 12h at 30s)
+            snapshot = json.dumps({
+                "ts": snapshot_ts,
+                "portfolio_value": round(portfolio_value, 4),
+                "realized_pnl": round(realized_pnl, 4),
+                "unrealized_pnl": round(unrealized_pnl, 4),
+                "total_pnl": round(total_pnl, 4),
+                "open_positions": len(positions),
+            })
+            await redis.lpush("pnl:snapshots", snapshot)
+            await redis.ltrim("pnl:snapshots", 0, 1439)
 
             logger.info(
                 "risk_monitor_cycle",

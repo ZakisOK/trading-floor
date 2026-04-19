@@ -4,6 +4,8 @@ from __future__ import annotations
 import structlog
 from fastapi import APIRouter
 
+import json
+
 from src.execution.broker import paper_broker
 from src.core.redis import get_redis
 from src.data.feeds.price_source import fetch_price as _fetch_price
@@ -143,3 +145,23 @@ async def get_risk_metrics() -> dict:
         }
     return {k: (float(v) if k != "updated_at" and k != "open_positions" else v)
             for k, v in raw.items()}
+
+
+@router.get("/pnl-history")
+async def pnl_history(limit: int = 240) -> dict:
+    """Return running P&L snapshots (risk_monitor captures one every 30s).
+
+    Default: 240 snapshots = 2 hours of history. Max = 1440 (12 hours).
+    """
+    limit = max(1, min(limit, 1440))
+    redis = get_redis()
+    raw = await redis.lrange("pnl:snapshots", 0, limit - 1)
+    points = []
+    for item in raw:
+        try:
+            points.append(json.loads(item))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+    # Redis list was LPUSHed, so index 0 is newest. Reverse for chronological order.
+    points.reverse()
+    return {"points": points, "count": len(points)}
