@@ -5,13 +5,37 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 // ── types ──────────────────────────────────────────────────────────────────
 
+type ExecutionVenue = "sim" | "alpaca_paper" | "live";
+
 interface SystemConfig {
   paper_trading: string;
+  execution_venue: ExecutionVenue;
   max_daily_loss_pct: number;
   max_position_size_pct: number;
   trailing_stop_pct: number;
   kill_switch_enabled: string;
 }
+
+const VENUE_META: Record<ExecutionVenue, { label: string; icon: string; blurb: string; tone: string }> = {
+  sim: {
+    label: "Simulation",
+    icon: "🧪",
+    blurb: "Local fills with slippage + commission. Nothing leaves the box.",
+    tone: "var(--text-tertiary)",
+  },
+  alpaca_paper: {
+    label: "Alpaca Paper",
+    icon: "📄",
+    blurb: "Real orders to Alpaca's paper endpoint. Equities + crypto. No real money.",
+    tone: "var(--accent-info)",
+  },
+  live: {
+    label: "LIVE",
+    icon: "⚡",
+    blurb: "Real orders on live Alpaca account. Real money at risk.",
+    tone: "#ef4444",
+  },
+};
 
 interface ExchangeConfig {
   api_key: string;
@@ -216,27 +240,37 @@ export default function SettingsPage() {
     });
   };
 
-  const isPaper = data?.system.paper_trading !== "false";
+  const venue: ExecutionVenue = (data?.system.execution_venue as ExecutionVenue | undefined)
+    ?? (data?.system.paper_trading === "false" ? "alpaca_paper" : "sim");
 
-  const handleModeToggle = () => {
-    if (isPaper) {
-      setShowLiveModal(true);
-    } else {
-      updateSystem("paper_trading", "true");
-      void fetch(`${API}/api/settings/toggle-live`, {
+  // Persist venue immediately so it takes effect without a full "Save".
+  const persistVenue = async (next: ExecutionVenue) => {
+    updateSystem("execution_venue", next);
+    updateSystem("paper_trading", next === "sim" ? "true" : "false");
+    try {
+      await fetch(`${API}/api/settings`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ confirm: true }),
+        body: JSON.stringify({
+          system: {
+            execution_venue: next,
+            paper_trading: next === "sim" ? "true" : "false",
+          },
+        }),
       });
+    } catch { /* shown via save banner on next save */ }
+  };
+
+  const handleVenueChange = (next: ExecutionVenue) => {
+    if (next === "live") {
+      setShowLiveModal(true);
+      return;
     }
+    void persistVenue(next);
   };
 
   const confirmLive = () => {
     setShowLiveModal(false);
-    updateSystem("paper_trading", "false");
-    void fetch(`${API}/api/settings/toggle-live`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ confirm: true }),
-    });
+    void persistVenue("live");
   };
 
   const testExchange = async (exId: string) => {
@@ -293,25 +327,38 @@ export default function SettingsPage() {
       <div style={S.heading}>Settings</div>
       <div style={S.subheading}>Configure trading mode, risk controls, exchange credentials, and agents.</div>
 
-      {/* ── 1. System Mode ───────────────────────────────────────────────── */}
+      {/* ── 1. Execution Venue ───────────────────────────────────────────── */}
       <div style={S.section}>
-        <div style={S.sectionTitle}>System Mode</div>
-        <div style={{ ...S.card, border: isPaper ? "1px solid var(--border-subtle)" : "1px solid #ef4444" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div>
-              <div style={{ fontSize: 18, fontWeight: 800, color: isPaper ? "var(--accent-info)" : "#ef4444", marginBottom: 4 }}>
-                {isPaper ? "📄 PAPER TRADING" : "⚡ LIVE TRADING"}
-              </div>
-              <div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
-                {isPaper
-                  ? "Orders are simulated. No real money at risk."
-                  : "Real orders submitted to exchange. Real money at risk."}
-              </div>
-            </div>
-            <Toggle on={!isPaper} onChange={handleModeToggle} danger />
+        <div style={S.sectionTitle}>Execution Venue</div>
+        <div style={{ ...S.card, border: venue === "live" ? "1px solid #ef4444" : "1px solid var(--border-subtle)" }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+            {(Object.keys(VENUE_META) as ExecutionVenue[]).map((v) => {
+              const meta = VENUE_META[v];
+              const active = venue === v;
+              return (
+                <button key={v} onClick={() => handleVenueChange(v)} style={{
+                  flex: 1, padding: "14px 12px", borderRadius: 8, cursor: "pointer",
+                  background: active ? (v === "live" ? "rgba(239,68,68,0.15)" : "rgba(99,102,241,0.15)") : "transparent",
+                  border: `1px solid ${active ? meta.tone : "var(--border-subtle)"}`,
+                  color: active ? meta.tone : "var(--text-tertiary)",
+                  fontSize: 14, fontWeight: 700, textAlign: "left" as const,
+                  transition: "all 0.15s",
+                }}>
+                  <div style={{ fontSize: 16, marginBottom: 4 }}>{meta.icon} {meta.label}</div>
+                  <div style={{ fontSize: 11, fontWeight: 500, color: active ? meta.tone : "var(--text-tertiary)", opacity: 0.85 }}>
+                    {meta.blurb}
+                  </div>
+                </button>
+              );
+            })}
           </div>
-          {!isPaper && (
-            <div style={{ marginTop: 14, padding: "10px 14px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 8, fontSize: 12, color: "#fca5a5" }}>
+          {venue === "alpaca_paper" && (
+            <div style={{ padding: "10px 14px", background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.3)", borderRadius: 8, fontSize: 12, color: "var(--accent-info)" }}>
+              📄 Paper orders route to https://paper-api.alpaca.markets — visible in your Alpaca paper dashboard.
+            </div>
+          )}
+          {venue === "live" && (
+            <div style={{ padding: "10px 14px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 8, fontSize: 12, color: "#fca5a5" }}>
               ⚠ LIVE MODE ACTIVE — real orders are being placed. Use the Kill Switch below to halt all trading.
             </div>
           )}

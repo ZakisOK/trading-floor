@@ -25,12 +25,14 @@ _EXCHANGE_IDS = ("binance", "coinbase", "kraken", "polymarket")
 _EXCHANGE_CRED_FIELDS = ("api_key", "secret", "passphrase", "sandbox", "enabled")
 _SYSTEM_FIELDS = (
     "paper_trading",
+    "execution_venue",
     "max_daily_loss_pct",
     "max_position_size_pct",
     "trailing_stop_pct",
     "kill_switch_enabled",
     "autonomy_mode",
 )
+_VALID_VENUES = ("sim", "alpaca_paper", "live")
 _AGENT_NAMES = (
     "atlas", "bear", "bull", "carry_agent", "commodities_analyst",
     "copy_trade_scout", "cot_analyst", "diana", "eia_analyst",
@@ -71,10 +73,18 @@ async def get_settings() -> dict[str, Any]:
     """Return complete config snapshot. Sensitive fields are masked."""
     redis = get_redis()
 
-    # System config
+    # System config — derive venue from the legacy paper_trading flag when it
+    # hasn't been set explicitly yet, so existing deployments keep working.
     system_raw: dict[str, str] = await redis.hgetall("config:system") or {}
+    legacy_paper = system_raw.get("paper_trading", "true")
+    legacy_is_paper = legacy_paper.strip().lower() not in ("false", "0", "no")
+    default_venue = "sim" if legacy_is_paper else "alpaca_paper"
+    venue = system_raw.get("execution_venue") or default_venue
+    if venue not in _VALID_VENUES:
+        venue = default_venue
     system: dict[str, Any] = {
-        "paper_trading": system_raw.get("paper_trading", "true"),
+        "paper_trading": legacy_paper,
+        "execution_venue": venue,
         "max_daily_loss_pct": float(system_raw.get("max_daily_loss_pct", "2.0")),
         "max_position_size_pct": float(system_raw.get("max_position_size_pct", "5.0")),
         "trailing_stop_pct": float(system_raw.get("trailing_stop_pct", "5.0")),
@@ -138,6 +148,12 @@ async def update_settings(body: SettingsUpdate) -> dict[str, str]:
 
     if body.system:
         allowed = {k: str(v) for k, v in body.system.items() if k in _SYSTEM_FIELDS}
+        venue_val = allowed.get("execution_venue")
+        if venue_val is not None and venue_val not in _VALID_VENUES:
+            raise HTTPException(400, f"execution_venue must be one of {_VALID_VENUES}")
+        # Keep the legacy flag in sync so anything still reading it stays coherent
+        if venue_val is not None and "paper_trading" not in allowed:
+            allowed["paper_trading"] = "true" if venue_val == "sim" else "false"
         if allowed:
             await redis.hset("config:system", mapping=allowed)
 

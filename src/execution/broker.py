@@ -1,11 +1,20 @@
-"""Broker — paper trading by default; switches to live ccxt when paper_trading=false.
+"""Broker — venue-aware order routing.
 
-Routing rules:
-  - paper_trading=true (Redis config:system)  → PaperBroker for all assets
-  - paper_trading=false, commodity symbol     → PaperBroker + warning (never real)
-  - paper_trading=false, exchange=polymarket  → PaperBroker (Polymarket uses own HTTP client)
-  - paper_trading=false, equity symbol        → AlpacaBroker (alpaca-py SDK)
-  - paper_trading=false, binance/coinbase/kraken → live ccxt order
+Execution venue is read from Redis  config:system.execution_venue  with three values:
+  - sim          → local PaperBroker simulation (Redis-backed paper:* keys)
+  - alpaca_paper → AlpacaBroker with paper=True (hits paper-api.alpaca.markets)
+  - live         → AlpacaBroker with paper=False; ccxt venues still available for
+                   binance/coinbase/kraken when exchange_id is set explicitly
+
+Routing within a non-sim venue:
+  - equity ticker or exchange_id=="alpaca" → AlpacaBroker
+  - Alpaca-supported crypto pair (BTC/USD, ETH/USD, SOL/USD…) → AlpacaBroker
+  - commodity futures (GC=F, CL=F…)      → PaperBroker (Alpaca has no futures)
+  - exchange_id=="polymarket"            → PaperBroker (own HTTP client)
+  - exchange_id in {binance,coinbase,kraken} and venue==live → live ccxt order
+
+Backward compat: the legacy flag  config:system.paper_trading  is still honored
+when execution_venue is not set — "true" maps to sim, "false" maps to alpaca_paper.
 """
 from __future__ import annotations
 
@@ -80,29 +89,48 @@ def _is_equity_symbol(symbol: str) -> bool:
     return bool(_EQUITY_SYMBOL_RE.match(symbol))
 
 
-async def _paper_trading_enabled() -> bool:
-    """Read paper_trading flag from Redis hash config:system.
-    Returns True (safe default) when the key is missing."""
+VALID_VENUES: frozenset[str] = frozenset({"sim", "alpaca_paper", "live"})
+
+
+async def get_execution_venue() -> str:
+    """Return the active execution venue.
+
+    Precedence: config:system.execution_venue → derive from paper_trading flag →
+    "sim" (safest default).
+    """
     redis = get_redis()
-    val: str | None = await redis.hget("config:system", "paper_trading")
-    if val is None:
-        return True
-    return val.strip().lower() not in ("false", "0", "no")
+    raw = await redis.hget("config:system", "execution_venue")
+    if raw:
+        venue = raw.strip().lower()
+        if venue in VALID_VENUES:
+            return venue
+    legacy = await redis.hget("config:system", "paper_trading")
+    if legacy is None:
+        return "sim"
+    is_paper = legacy.strip().lower() not in ("false", "0", "no")
+    return "sim" if is_paper else "alpaca_paper"
 
 
-_alpaca_broker_singleton: object | None = None
+async def _paper_trading_enabled() -> bool:
+    """Legacy helper — "paper" means anything that isn't live money.
+
+    Retained so existing call sites don't have to change. For routing
+    decisions inside submit_order we read the venue directly.
+    """
+    venue = await get_execution_venue()
+    return venue != "live"
 
 
-def _get_alpaca_broker() -> object | None:
+# Cache one AlpacaBroker per paper flag so paper and live can coexist in-process.
+_alpaca_broker_cache: dict[bool, object] = {}
+
+
+def get_alpaca_broker(paper: bool | None = None) -> object | None:
     """Lazy-construct AlpacaBroker using env/settings credentials.
 
     Returned as ``object | None`` to avoid a hard import cycle at module load;
     the broker exposes ``submit_order(...)`` matching the Order contract.
     """
-    global _alpaca_broker_singleton
-    if _alpaca_broker_singleton is not None:
-        return _alpaca_broker_singleton
-
     try:
         from src.core.config import settings
         from src.execution.alpaca_broker import AlpacaBroker
@@ -116,15 +144,24 @@ def _get_alpaca_broker() -> object | None:
         logger.warning("alpaca_credentials_missing")
         return None
 
-    paper_flag = getattr(settings, "alpaca_paper_trade", None)
-    if paper_flag is None:
-        paper_flag = os.getenv("ALPACA_PAPER_TRADE", "true")
-    paper = paper_flag if isinstance(paper_flag, bool) else (
-        str(paper_flag).strip().lower() not in ("false", "0", "no")
-    )
+    if paper is None:
+        paper_flag = getattr(settings, "alpaca_paper_trade", None)
+        if paper_flag is None:
+            paper_flag = os.getenv("ALPACA_PAPER_TRADE", "true")
+        paper = paper_flag if isinstance(paper_flag, bool) else (
+            str(paper_flag).strip().lower() not in ("false", "0", "no")
+        )
 
-    _alpaca_broker_singleton = AlpacaBroker(api_key=api_key, secret=secret, paper=paper)
-    return _alpaca_broker_singleton
+    cached = _alpaca_broker_cache.get(paper)
+    if cached is not None:
+        return cached
+    broker = AlpacaBroker(api_key=api_key, secret=secret, paper=paper)
+    _alpaca_broker_cache[paper] = broker
+    return broker
+
+
+# Legacy alias — older call sites.
+_get_alpaca_broker = get_alpaca_broker
 
 
 async def _get_live_exchange(exchange_id: str) -> ccxt_async.Exchange | None:
@@ -310,13 +347,51 @@ class PaperBroker:
         take_profit: float | None = None,
         exchange_id: str = "binance",
     ) -> Order:
-        """Route the order: live ccxt when enabled, paper otherwise."""
-        paper = await _paper_trading_enabled()
+        """Route the order based on execution_venue + symbol type."""
+        from src.execution.alpaca_broker import (
+            is_alpaca_crypto_symbol,
+            is_alpaca_equity_symbol,
+        )
 
-        # Equities live path — route to alpaca-py SDK broker when not in paper mode.
-        # Triggered by exchange_id=="alpaca" OR a bare equity ticker like SPY/QQQ.
-        if not paper and (exchange_id == "alpaca" or _is_equity_symbol(symbol)):
-            alpaca = _get_alpaca_broker()
+        venue = await get_execution_venue()
+
+        # Commodities: Alpaca has no futures, so they always stay on the local sim.
+        if _is_commodity(symbol):
+            if venue != "sim":
+                logger.warning(
+                    "commodity_forced_sim",
+                    symbol=symbol, venue=venue,
+                    msg="Commodity futures are sim-only.",
+                )
+            return await self._paper_fill(
+                symbol, side, quantity, current_price,
+                agent_id, strategy, stop_loss, take_profit,
+            )
+
+        # Polymarket uses its own HTTP client — sim-only here.
+        if exchange_id == "polymarket":
+            return await self._paper_fill(
+                symbol, side, quantity, current_price,
+                agent_id, strategy, stop_loss, take_profit,
+            )
+
+        # sim venue → local simulation for everything
+        if venue == "sim":
+            return await self._paper_fill(
+                symbol, side, quantity, current_price,
+                agent_id, strategy, stop_loss, take_profit,
+            )
+
+        # alpaca_paper or live: route through AlpacaBroker for equities and
+        # Alpaca-supported crypto pairs. Fall back to sim on credential failure.
+        routes_alpaca = (
+            exchange_id == "alpaca"
+            or is_alpaca_equity_symbol(symbol)
+            or is_alpaca_crypto_symbol(symbol)
+        )
+        if routes_alpaca:
+            alpaca_paper = venue != "live"
+            alpaca = get_alpaca_broker(paper=alpaca_paper)
             if alpaca is not None:
                 order = await alpaca.submit_order(
                     symbol=symbol, side=side, quantity=quantity,
@@ -326,43 +401,28 @@ class PaperBroker:
                 await self._push_order(order)
                 return order
             logger.warning(
-                "alpaca_broker_unavailable_fallback_paper",
-                symbol=symbol, exchange=exchange_id,
+                "alpaca_broker_unavailable_fallback_sim",
+                symbol=symbol, exchange=exchange_id, venue=venue,
             )
-
-        # Commodities always stay in paper mode
-        if _is_commodity(symbol):
-            if not paper:
-                logger.warning(
-                    "commodity_forced_paper_mode",
-                    symbol=symbol,
-                    msg="Commodity futures are paper-only; ignoring live trading flag.",
-                )
             return await self._paper_fill(
                 symbol, side, quantity, current_price,
                 agent_id, strategy, stop_loss, take_profit,
             )
 
-        # Polymarket uses its own HTTP client — keep paper here
-        if exchange_id == "polymarket":
-            return await self._paper_fill(
-                symbol, side, quantity, current_price,
-                agent_id, strategy, stop_loss, take_profit,
-            )
-
-        # Live path
-        if not paper:
+        # live venue + non-Alpaca crypto → ccxt (binance/coinbase/kraken)
+        if venue == "live":
             exchange = await _get_live_exchange(exchange_id)
             if exchange is not None:
                 return await self._live_fill(
                     exchange, symbol, side, quantity, agent_id, strategy, exchange_id,
                 )
             logger.warning(
-                "live_exchange_unavailable_fallback_paper",
+                "live_exchange_unavailable_fallback_sim",
                 exchange=exchange_id, symbol=symbol,
             )
 
-        # Default: paper simulation
+        # alpaca_paper + non-Alpaca crypto pair → still simulate locally.
+        # Don't silently flip to live ccxt from a "paper" venue.
         return await self._paper_fill(
             symbol, side, quantity, current_price,
             agent_id, strategy, stop_loss, take_profit,

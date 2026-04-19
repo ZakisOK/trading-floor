@@ -1,4 +1,8 @@
-"""Execution API — live positions enriched with current prices."""
+"""Execution API — live positions enriched with current prices.
+
+Venue-aware: when config:system.execution_venue is `alpaca_paper` or `live`,
+portfolio and positions are read from Alpaca instead of the local sim state.
+"""
 from __future__ import annotations
 
 import structlog
@@ -6,7 +10,7 @@ from fastapi import APIRouter
 
 import json
 
-from src.execution.broker import paper_broker
+from src.execution.broker import paper_broker, get_alpaca_broker, get_execution_venue
 from src.core.redis import get_redis
 from src.data.feeds.price_source import fetch_price as _fetch_price
 
@@ -15,17 +19,66 @@ logger = structlog.get_logger()
 router = APIRouter(prefix="/api/execution", tags=["execution"])
 
 
+async def _venue_alpaca():
+    """Return (venue, alpaca_broker_or_None). Alpaca is None when venue is sim
+    or credentials are missing, in which case callers fall back to sim state."""
+    venue = await get_execution_venue()
+    if venue == "sim":
+        return venue, None
+    alpaca = get_alpaca_broker(paper=(venue != "live"))
+    return venue, alpaca
+
+
+@router.get("/venue")
+async def get_venue() -> dict:
+    """Return the active execution venue + whether Alpaca is reachable.
+
+    The MC header reads this to show a venue badge.
+    """
+    venue, alpaca = await _venue_alpaca()
+    account_ok = False
+    account: dict = {}
+    if alpaca is not None:
+        account = await alpaca.get_account()
+        account_ok = bool(account.get("status") == "ACTIVE")
+    return {
+        "venue": venue,
+        "alpaca_available": alpaca is not None,
+        "alpaca_account_status": account.get("status") if alpaca else None,
+        "alpaca_account_ok": account_ok,
+    }
+
+
 @router.get("/portfolio")
 async def get_portfolio() -> dict:
-    """Portfolio summary — cash, positions value, total, daily P&L, win rate from closed trades."""
-    cash = await paper_broker.get_cash()
-    positions = await paper_broker.get_positions()
-    prices: dict[str, float] = {}
-    for pos in positions:
-        price = await _fetch_price(pos["symbol"])
-        if price:
-            prices[pos["symbol"]] = price
-    total = await paper_broker.get_portfolio_value(prices)
+    """Portfolio summary — cash, positions value, total, daily P&L, win rate from closed trades.
+
+    When the active venue is alpaca_paper/live, cash/equity/positions reflect the
+    Alpaca account. Win rate and closed-trade counters come from the local
+    simulated history either way (Alpaca order history is fetched via /orders).
+    """
+    venue, alpaca = await _venue_alpaca()
+
+    # Source of truth for cash + positions
+    if alpaca is not None:
+        account = await alpaca.get_account()
+        positions = await alpaca.get_positions()
+        cash = account.get("cash", 0.0)
+        total = account.get("portfolio_value", 0.0) or (
+            cash + sum(p.get("market_value", 0.0) for p in positions)
+        )
+        # Alpaca's day P&L = equity − last_equity (close of previous session)
+        daily_pnl = account.get("equity", 0.0) - account.get("last_equity", 0.0)
+    else:
+        cash = await paper_broker.get_cash()
+        positions = await paper_broker.get_positions()
+        prices: dict[str, float] = {}
+        for pos in positions:
+            price = await _fetch_price(pos["symbol"])
+            if price:
+                prices[pos["symbol"]] = price
+        total = await paper_broker.get_portfolio_value(prices)
+        daily_pnl = await paper_broker.get_daily_pnl()
 
     # Win rate = wins / (wins + losses) across closed trades
     orders = await paper_broker.get_orders(limit=500)
@@ -54,10 +107,11 @@ async def get_portfolio() -> dict:
     win_rate = wins / total_closed if total_closed else 0.0
 
     return {
+        "venue": venue,
         "cash": cash,
         "positions_value": total - cash,
         "total": total,
-        "daily_pnl": await paper_broker.get_daily_pnl(),
+        "daily_pnl": daily_pnl,
         "trade_count": await paper_broker.get_trade_count(),
         "win_rate": win_rate,
         "closed_trades": total_closed,
@@ -71,12 +125,43 @@ async def get_portfolio() -> dict:
 async def get_live_positions() -> list[dict]:
     """
     Return all open positions enriched with:
-    - current_price (live from Binance)
+    - current_price (live from Alpaca or price feed)
     - unrealized_pnl (notional)
     - unrealized_pnl_pct
     - distance_to_stop_pct (how far price is above the stop)
     - distance_to_target_pct (how far price is below the target)
+
+    When the active venue is Alpaca, positions + P&L are read directly from
+    Alpaca (authoritative); stop/target are inferred since Alpaca doesn't
+    persist our strategy levels.
     """
+    venue, alpaca = await _venue_alpaca()
+    if alpaca is not None:
+        alpaca_positions = await alpaca.get_positions()
+        if not alpaca_positions:
+            return []
+        DEFAULT_STOP_PCT = 0.03
+        DEFAULT_TARGET_PCT = 0.06
+        out = []
+        for pos in alpaca_positions:
+            avg = pos["avg_price"]
+            cur = pos["current_price"] or avg
+            stop = avg * (1 - DEFAULT_STOP_PCT)
+            target = avg * (1 + DEFAULT_TARGET_PCT)
+            stop_range = avg - stop
+            target_range = target - avg
+            dist_stop = (cur - stop) / stop_range if stop_range > 0 else 1.0
+            dist_target = (target - cur) / target_range if target_range > 0 else 0.0
+            out.append({
+                **pos,
+                "stop_loss": round(stop, 6),
+                "take_profit": round(target, 6),
+                "trailing_stop": None,
+                "distance_to_stop_pct": round(max(0.0, min(1.0, dist_stop)), 4),
+                "distance_to_target_pct": round(max(0.0, min(1.0, dist_target)), 4),
+            })
+        return out
+
     positions = await paper_broker.get_positions()
     if not positions:
         return []
@@ -130,10 +215,25 @@ async def get_live_positions() -> list[dict]:
 
 @router.get("/risk-metrics")
 async def get_risk_metrics() -> dict:
-    """Return the latest risk metrics written by risk_monitor every 30s."""
+    """Return the latest risk metrics written by risk_monitor every 30s.
+
+    Fallback path (when risk_monitor hasn't written yet) is venue-aware.
+    """
     redis = get_redis()
     raw = await redis.hgetall("risk:metrics")
     if not raw:
+        _venue, alpaca = await _venue_alpaca()
+        if alpaca is not None:
+            account = await alpaca.get_account()
+            positions = await alpaca.get_positions()
+            return {
+                "daily_pnl": account.get("equity", 0.0) - account.get("last_equity", 0.0),
+                "portfolio_value": account.get("portfolio_value", 0.0),
+                "total_exposure": sum(p.get("market_value", 0.0) for p in positions),
+                "drawdown_pct": 0.0,
+                "open_positions": len(positions),
+                "updated_at": None,
+            }
         portfolio_value = await paper_broker.get_portfolio_value()
         return {
             "daily_pnl": await paper_broker.get_daily_pnl(),

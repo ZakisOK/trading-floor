@@ -16,7 +16,38 @@ interface PendingSignal {
   created_at: string;
 }
 
-interface Mode { system?: { autonomy_mode?: string } }
+interface Mode { system?: { autonomy_mode?: string; execution_venue?: string } }
+
+type VenuePillProps = { venue: string; alpacaOk: boolean | null };
+
+function VenuePill({ venue, alpacaOk }: VenuePillProps) {
+  const label =
+    venue === "live" ? "LIVE" :
+    venue === "alpaca_paper" ? "ALPACA PAPER" :
+    "SIM";
+  const bg =
+    venue === "live" ? "rgba(239,68,68,0.15)" :
+    venue === "alpaca_paper" ? "rgba(99,102,241,0.15)" :
+    "rgba(255,255,255,0.06)";
+  const color =
+    venue === "live" ? "#ef4444" :
+    venue === "alpaca_paper" ? "#818cf8" :
+    "var(--text-tertiary)";
+  const dot = alpacaOk === false ? "#ef4444" : alpacaOk ? "#22c55e" : color;
+  return (
+    <span title={alpacaOk === false ? "Alpaca credentials missing or account inactive" : `Venue: ${venue}`}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 6,
+        fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 3,
+        background: bg, color, textTransform: "uppercase", letterSpacing: "0.05em",
+      }}>
+      {venue !== "sim" && (
+        <span style={{ width: 6, height: 6, borderRadius: "50%", background: dot }} />
+      )}
+      {label}
+    </span>
+  );
+}
 
 function timeAgo(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
@@ -28,15 +59,27 @@ function timeAgo(iso: string): string {
 export function ApprovalBanner() {
   const [pending, setPending] = useState<PendingSignal[]>([]);
   const [mode, setMode] = useState<string>("COMMANDER");
+  const [venue, setVenue] = useState<string>("sim");
+  const [alpacaOk, setAlpacaOk] = useState<boolean | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [p, m] = await Promise.allSettled([
+      const [p, m, v] = await Promise.allSettled([
         fetch(`${API}/api/orders/pending`).then((r) => r.json()),
         fetch(`${API}/api/settings`).then((r) => r.json()),
+        fetch(`${API}/api/execution/venue`).then((r) => r.json()),
       ]);
       if (p.status === "fulfilled") setPending(Array.isArray(p.value) ? p.value : []);
-      if (m.status === "fulfilled") setMode((m.value as Mode).system?.autonomy_mode ?? "COMMANDER");
+      if (m.status === "fulfilled") {
+        const sys = (m.value as Mode).system;
+        setMode(sys?.autonomy_mode ?? "COMMANDER");
+        if (sys?.execution_venue) setVenue(sys.execution_venue);
+      }
+      if (v.status === "fulfilled" && v.value) {
+        const data = v.value as { venue?: string; alpaca_account_ok?: boolean; alpaca_available?: boolean };
+        if (data.venue) setVenue(data.venue);
+        setAlpacaOk(data.venue === "sim" ? null : Boolean(data.alpaca_account_ok));
+      }
     } catch {}
   }, []);
 
@@ -68,7 +111,10 @@ export function ApprovalBanner() {
         background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.3)",
         fontSize: 12, color: "var(--text-secondary)",
       }}>
-        <span><strong style={{ color: "#22c55e" }}>{mode}</strong> mode — auto-executing approved signals</span>
+        <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <VenuePill venue={venue} alpacaOk={alpacaOk} />
+          <span><strong style={{ color: "#22c55e" }}>{mode}</strong> mode — auto-executing approved signals</span>
+        </span>
         <div style={{ display: "flex", gap: 6 }}>
           {["COMMANDER", "TRUSTED", "YOLO"].map((m) => (
             <button key={m} onClick={() => changeMode(m)} style={{
@@ -94,6 +140,7 @@ export function ApprovalBanner() {
     }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: pending.length > 0 ? 12 : 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <VenuePill venue={venue} alpacaOk={alpacaOk} />
           <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 3, background: "#f59e0b22", color: "#f59e0b", textTransform: "uppercase", letterSpacing: "0.05em" }}>
             {mode}
           </span>
