@@ -101,12 +101,24 @@ async def run() -> None:
             )
             drawdown_pct = daily_pnl / _INITIAL_CASH if _INITIAL_CASH > 0 else 0.0
 
-            # Realized P&L: sum of closed-trade P&L (from order history)
+            # Unrealized P&L: mark-to-market open positions vs entry price
+            unrealized_pnl = 0.0
+            for pos in positions:
+                price = current_prices.get(pos["symbol"], pos["avg_price"])
+                unrealized_pnl += (price - pos["avg_price"]) * pos["quantity"]
+
+            # Total P&L is definitively portfolio_value - starting_cash.
+            # Realized is the remainder — captures commissions/slippage/closed-trade P&L.
+            total_pnl = portfolio_value - _INITIAL_CASH
+            realized_pnl = total_pnl - unrealized_pnl
+
+            # "Closed-trade P&L" (FIFO-matched) is a different, narrower metric
+            # — kept for the win/loss record only.
             orders_list = [o.to_dict() for o in await paper_broker.get_orders(limit=500)]
             by_sym: dict[str, list[dict]] = {}
             for o in sorted(orders_list, key=lambda x: x["filled_at"] or x["created_at"] or ""):
                 by_sym.setdefault(o["symbol"], []).append(o)
-            realized_pnl = 0.0
+            closed_trade_pnl = 0.0
             for sym_orders in by_sym.values():
                 buys: list[dict] = []
                 for o in sym_orders:
@@ -116,18 +128,35 @@ async def run() -> None:
                         buys.append(o)
                     elif o["side"] == "SELL" and buys:
                         entry = buys.pop(0)
-                        realized_pnl += (float(o.get("filled_price") or 0) - float(entry.get("filled_price") or 0)) * float(o.get("quantity") or 0)
+                        closed_trade_pnl += (float(o.get("filled_price") or 0) - float(entry.get("filled_price") or 0)) * float(o.get("quantity") or 0)
 
-            # Unrealized P&L: mark-to-market open positions
-            unrealized_pnl = 0.0
-            for pos in positions:
-                price = current_prices.get(pos["symbol"], pos["avg_price"])
-                unrealized_pnl += (price - pos["avg_price"]) * pos["quantity"]
-
-            total_pnl = realized_pnl + unrealized_pnl
             snapshot_ts = datetime.now(UTC).isoformat()
+            today_key = datetime.now(UTC).strftime("%Y-%m-%d")
 
-            # Publish metrics to Redis for dashboard consumption
+            # Seed today's start-of-day portfolio value once
+            daily_hash = f"pnl:daily:{today_key}"
+            if not await redis.hexists(daily_hash, "start_portfolio"):
+                await redis.hset(daily_hash, mapping={
+                    "date": today_key,
+                    "start_portfolio": str(round(portfolio_value, 4)),
+                    "start_ts": snapshot_ts,
+                })
+            start_portfolio_raw = await redis.hget(daily_hash, "start_portfolio")
+            start_portfolio = float(start_portfolio_raw) if start_portfolio_raw else portfolio_value
+            day_pnl = portfolio_value - start_portfolio
+
+            # Update current daily stats
+            await redis.hset(daily_hash, mapping={
+                "end_portfolio": str(round(portfolio_value, 4)),
+                "day_pnl": str(round(day_pnl, 4)),
+                "total_pnl": str(round(total_pnl, 4)),
+                "realized_pnl": str(round(realized_pnl, 4)),
+                "unrealized_pnl": str(round(unrealized_pnl, 4)),
+                "closed_trade_pnl": str(round(closed_trade_pnl, 4)),
+                "last_ts": snapshot_ts,
+            })
+
+            # Publish metrics for dashboard
             await redis.hset(RISK_METRICS_KEY, mapping={
                 "daily_pnl": str(round(daily_pnl, 4)),
                 "portfolio_value": str(round(portfolio_value, 4)),
@@ -137,16 +166,20 @@ async def run() -> None:
                 "realized_pnl": str(round(realized_pnl, 4)),
                 "unrealized_pnl": str(round(unrealized_pnl, 4)),
                 "total_pnl": str(round(total_pnl, 4)),
+                "closed_trade_pnl": str(round(closed_trade_pnl, 4)),
+                "day_pnl": str(round(day_pnl, 4)),
+                "starting_capital": str(_INITIAL_CASH),
                 "updated_at": snapshot_ts,
             })
 
-            # Append a snapshot to the running P&L history (keep last 1440 = 12h at 30s)
+            # Append to running P&L history (keep last 1440 = 12h at 30s)
             snapshot = json.dumps({
                 "ts": snapshot_ts,
                 "portfolio_value": round(portfolio_value, 4),
                 "realized_pnl": round(realized_pnl, 4),
                 "unrealized_pnl": round(unrealized_pnl, 4),
                 "total_pnl": round(total_pnl, 4),
+                "day_pnl": round(day_pnl, 4),
                 "open_positions": len(positions),
             })
             await redis.lpush("pnl:snapshots", snapshot)

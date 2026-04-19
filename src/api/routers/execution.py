@@ -147,6 +147,38 @@ async def get_risk_metrics() -> dict:
             for k, v in raw.items()}
 
 
+@router.get("/pnl-daily")
+async def pnl_daily(days: int = 30) -> dict:
+    """Return per-day portfolio snapshots to track growth day-over-day."""
+    from datetime import date, timedelta
+    days = max(1, min(days, 90))
+    redis = get_redis()
+    result = []
+    for i in range(days):
+        d = (date.today() - timedelta(days=i)).isoformat()
+        raw = await redis.hgetall(f"pnl:daily:{d}")
+        if not raw:
+            continue
+        def _f(k: str) -> float:
+            try:
+                return float(raw.get(k, 0) or 0)
+            except ValueError:
+                return 0.0
+        result.append({
+            "date": d,
+            "start_portfolio": _f("start_portfolio"),
+            "end_portfolio": _f("end_portfolio"),
+            "day_pnl": _f("day_pnl"),
+            "total_pnl": _f("total_pnl"),
+            "realized_pnl": _f("realized_pnl"),
+            "unrealized_pnl": _f("unrealized_pnl"),
+            "closed_trade_pnl": _f("closed_trade_pnl"),
+            "last_ts": raw.get("last_ts"),
+        })
+    result.reverse()  # chronological
+    return {"days": result, "starting_capital": 10000.0}
+
+
 @router.get("/pnl-history")
 async def pnl_history(limit: int = 240) -> dict:
     """Return running P&L snapshots (risk_monitor captures one every 30s).
