@@ -205,8 +205,9 @@ async def main() -> None:
         "paper_trading_started",
         xrp_symbols=XRP_SYMBOLS,
         xrp_interval_s=XRP_CYCLE_INTERVAL,
-        other_symbols=OTHER_SYMBOLS,
-        other_interval_s=OTHER_CYCLE_INTERVAL,
+        tier1_symbols=CRYPTO_TIER1,
+        tier2_symbols=CRYPTO_TIER2,
+        commodity_symbols=COMMODITY_SYMBOLS,
         macro_refresh_interval_s=MACRO_REFRESH_INTERVAL,
     )
 
