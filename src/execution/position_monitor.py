@@ -106,7 +106,7 @@ async def _exit_position(pos: dict, current_price: float, reason: str) -> None:
     await _update_agent_elos(symbol, pnl_pct, redis)
 
 
-_ELO_K = 16  # Per-trade rating delta
+_ELO_K = 32  # Per-trade rating delta (standard mid-range chess K-factor)
 _ELO_DRAW_PCT = 0.001  # <0.1% is a draw
 
 
