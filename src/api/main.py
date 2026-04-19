@@ -67,6 +67,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def no_cache_api(request, call_next):  # type: ignore[no-untyped-def]
+    """Force browsers + any intermediary to always re-fetch API responses."""
+    response = await call_next(request)
+    if request.url.path.startswith("/api") or request.url.path == "/health":
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
 app.include_router(market_router)
 app.include_router(backtest_router)
 app.include_router(agents_router)
