@@ -62,7 +62,6 @@ class BaseAgent(ABC):
         self.agent_id = agent_id
         self.name = name
         self.role = role
-        self.elo_rating = 1200.0
         self._skill_loader = get_skill_loader() if _SKILLS_AVAILABLE and get_skill_loader else None
 
     # ------------------------------------------------------------------ skills
@@ -173,12 +172,15 @@ class BaseAgent(ABC):
     async def heartbeat(
         self, status: str = "active", current_task: str | None = None
     ) -> None:
-        """Publish the agent's live state to Redis so the dashboard reflects it."""
+        """Publish the agent's live state to Redis so the dashboard reflects it.
+
+        Elo is owned by position_monitor (updated on position close). Heartbeat
+        writes only liveness fields so it doesn't stomp the Elo value.
+        """
         redis = get_redis()
         mapping: dict[str, str] = {
             "status": status,
             "last_heartbeat": datetime.now(UTC).isoformat(),
-            "elo": str(self.elo_rating),
         }
         if current_task is not None:
             mapping["current_task"] = current_task
