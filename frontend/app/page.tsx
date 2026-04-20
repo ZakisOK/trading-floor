@@ -81,7 +81,26 @@ interface LlmCost {
   today_output_tokens?: number;
   by_model_today?: Record<string, { calls: number; usd: number; input_tokens: number; output_tokens: number }>;
 }
-interface PnlHistoryPoint { ts: string; portfolio_value: number; total_pnl: number; day_pnl: number; }
+interface PnlHistoryPoint {
+  ts: string;
+  portfolio_value: number;
+  total_pnl: number;
+  day_pnl: number;
+  unrealized_pnl?: number;
+  realized_pnl?: number;
+  open_positions?: number;
+}
+// Mini record of each fill so we can overlay markers on the P&L line.
+interface FillMarker {
+  order_id: string;
+  ts: string;
+  symbol: string;
+  side: "BUY" | "SELL" | string;
+  price: number;
+  quantity: number;
+  status: string;
+  agent_id?: string;
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function fmt(n: number | undefined | null, dec = 2) {
@@ -194,6 +213,8 @@ export default function MissionControlPage() {
   const [events, setEvents] = useState<StreamEvent[]>([]);
   const [cost, setCost] = useState<LlmCost | null>(null);
   const [pnlHistory, setPnlHistory] = useState<PnlHistoryPoint[]>([]);
+  const [fills, setFills] = useState<FillMarker[]>([]);
+  const [hoveredFill, setHoveredFill] = useState<FillMarker | null>(null);
   const [regime, setRegime] = useState<string>("UNKNOWN");
   const [effectiveSignals, setEffectiveSignals] = useState<number | null>(null);
   const [sentimentBySymbol, setSentimentBySymbol] = useState<Record<string, { score: number; label: string }>>({});
@@ -210,7 +231,7 @@ export default function MissionControlPage() {
   // Polling aggregator
   const fetchAll = useCallback(async () => {
     const j = (url: string) => fetch(url).then(r => r.json()).catch(() => null);
-    const [portRes, riskRes, posRes, agRes, sigRes, regRes, costRes, pnlRes, cfgRes, xrpSent, btcSent, gcSent] = await Promise.allSettled([
+    const [portRes, riskRes, posRes, agRes, sigRes, regRes, costRes, pnlRes, fillsRes, cfgRes, xrpSent, btcSent, gcSent] = await Promise.allSettled([
       j(`${API}/api/execution/portfolio`),
       j(`${API}/api/execution/risk-metrics`),
       j(`${API}/api/execution/positions`),
@@ -218,7 +239,8 @@ export default function MissionControlPage() {
       j(`${API}/api/signals/recent?limit=12`),
       j(`${API}/api/market/regime?symbol=XRP%2FUSDT`),
       j(`${API}/api/llm/costs`),
-      j(`${API}/api/execution/pnl-history?limit=120`),
+      j(`${API}/api/execution/pnl-history?limit=240`),
+      j(`${API}/api/orders?limit=200`),
       j(`${API}/api/settings`),
       j(`${API}/api/market/sentiment/XRP_USDT`),
       j(`${API}/api/market/sentiment/BTC_USDT`),
@@ -268,7 +290,32 @@ export default function MissionControlPage() {
         by_model_today: byModelShaped,
       });
     }
-    if (pnlRes.status === "fulfilled" && Array.isArray(pnlRes.value)) setPnlHistory(pnlRes.value);
+    if (pnlRes.status === "fulfilled" && pnlRes.value) {
+      // The endpoint wraps the list in { points: [...] }. Older shape was a
+      // raw array — support both so we don't break local dev.
+      const raw = Array.isArray(pnlRes.value) ? pnlRes.value : pnlRes.value?.points;
+      if (Array.isArray(raw)) setPnlHistory(raw);
+    }
+    if (fillsRes.status === "fulfilled" && Array.isArray(fillsRes.value)) {
+      // Map orders → lightweight fill markers. Include REJECTED so the user
+      // still sees the attempt; color-code accordingly in the chart.
+      const markers: FillMarker[] = fillsRes.value
+        .filter((o: { created_at?: string; filled_price?: number | null }) => o.created_at)
+        .map((o: {
+          order_id: string; symbol: string; side: string; filled_price?: number | null;
+          quantity: number; status: string; created_at: string; agent_id?: string;
+        }) => ({
+          order_id: o.order_id,
+          ts: o.created_at,
+          symbol: o.symbol,
+          side: o.side,
+          price: Number(o.filled_price ?? 0),
+          quantity: Number(o.quantity ?? 0),
+          status: o.status,
+          agent_id: o.agent_id,
+        }));
+      setFills(markers);
+    }
     if (cfgRes.status === "fulfilled" && cfgRes.value?.system?.autonomy_mode) setAutonomy(cfgRes.value.system.autonomy_mode);
     const sm: Record<string, { score: number; label: string }> = {};
     const assign = (sym: string, r: PromiseSettledResult<unknown>) => {
@@ -362,28 +409,98 @@ export default function MissionControlPage() {
   const exposurePct = totalValue > 0 ? totalExposure / totalValue : 0;
   const drawdown = risk?.drawdown_pct ?? 0;
 
-  // Chart points — use pnl history if available, else synthesize from positions
-  const chartPoints = useMemo(() => {
-    if (pnlHistory.length >= 2) {
-      return pnlHistory.map(p => p.portfolio_value);
+  // Chart geometry. We render every pnlHistory tick to a 760×180 coordinate
+  // space (matches the CSS chart-wrap height) and overlay fills as colored
+  // triangles at their timestamp's x-coordinate. All of this ties to a single
+  // time window — the first tick is t0, the last is tN — so markers sit on
+  // the line rather than drifting off.
+  const chartGeometry = useMemo(() => {
+    const empty = {
+      path: "",
+      fillPath: "",
+      points: [] as { x: number; y: number; ts: number; pv: number }[],
+      tMin: 0,
+      tMax: 0,
+      pvMin: startingCapital,
+      pvMax: startingCapital,
+      markers: [] as Array<FillMarker & { x: number; y: number }>,
+    };
+    if (pnlHistory.length < 2) {
+      // Degenerate fallback: draw a flat line at startingCapital. Markers
+      // still get rendered along a baseline so the user sees which trades
+      // happened even when history isn't back-filled yet.
+      const flatY = 90;
+      const line = `M0,${flatY} L760,${flatY}`;
+      const ts = fills.map(f => new Date(f.ts).getTime()).filter(t => !isNaN(t));
+      const tMin = ts.length > 0 ? Math.min(...ts) : Date.now() - 3600_000;
+      const tMax = ts.length > 0 ? Math.max(...ts) : Date.now();
+      const range = Math.max(1, tMax - tMin);
+      return {
+        ...empty,
+        path: line,
+        fillPath: `${line} L760,220 L0,220 Z`,
+        tMin, tMax,
+        pvMin: startingCapital, pvMax: startingCapital,
+        markers: fills
+          .map(f => ({ ...f, _t: new Date(f.ts).getTime() }))
+          .filter(f => !isNaN(f._t))
+          .map(f => ({
+            ...f,
+            x: ((f._t - tMin) / range) * 760,
+            y: flatY,
+          })),
+      };
     }
-    return [startingCapital, totalValue];
-  }, [pnlHistory, startingCapital, totalValue]);
-  const chartPath = useMemo(() => {
-    const n = chartPoints.length;
-    if (n < 2) return "";
-    const min = Math.min(...chartPoints), max = Math.max(...chartPoints);
-    const range = (max - min) || 1;
-    return chartPoints.map((v, i) => {
-      const x = (i / (n - 1)) * 760;
-      const y = 180 - ((v - min) / range) * 160 - 10;
-      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-    }).join(" ");
-  }, [chartPoints]);
-  const chartFill = useMemo(() => {
-    if (!chartPath) return "";
-    return `${chartPath} L760,220 L0,220 Z`;
-  }, [chartPath]);
+
+    const ptsWithTs = pnlHistory
+      .map(p => ({ pv: p.portfolio_value, t: new Date(p.ts).getTime() }))
+      .filter(p => !isNaN(p.t) && typeof p.pv === "number");
+    if (ptsWithTs.length < 2) return empty;
+
+    const tMin = ptsWithTs[0].t;
+    const tMax = ptsWithTs[ptsWithTs.length - 1].t;
+    const tRange = Math.max(1, tMax - tMin);
+    const pvs = ptsWithTs.map(p => p.pv);
+    // Pad the y-range a bit so the line doesn't hug the top/bottom edge.
+    const rawMin = Math.min(...pvs);
+    const rawMax = Math.max(...pvs);
+    const pad = Math.max(5, (rawMax - rawMin) * 0.15);
+    const pvMin = rawMin - pad;
+    const pvMax = rawMax + pad;
+    const pvRange = Math.max(1, pvMax - pvMin);
+
+    const points = ptsWithTs.map(p => ({
+      x: ((p.t - tMin) / tRange) * 760,
+      y: 170 - ((p.pv - pvMin) / pvRange) * 160,
+      ts: p.t,
+      pv: p.pv,
+    }));
+    const path = points.map((p, i) =>
+      `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`
+    ).join(" ");
+    const fillPath = `${path} L760,220 L0,220 Z`;
+
+    const markers = fills
+      .map(f => ({ ...f, _t: new Date(f.ts).getTime() }))
+      .filter(f => !isNaN(f._t) && f._t >= tMin - 60_000 && f._t <= tMax + 60_000)
+      .map(f => {
+        const x = Math.max(0, Math.min(760, ((f._t - tMin) / tRange) * 760));
+        // Snap each marker to the line by finding the nearest point.
+        let nearest = points[0];
+        let nearestDx = Math.abs(points[0].x - x);
+        for (const p of points) {
+          const dx = Math.abs(p.x - x);
+          if (dx < nearestDx) { nearest = p; nearestDx = dx; }
+        }
+        return { ...f, x, y: nearest.y };
+      });
+
+    return { path, fillPath, points, tMin, tMax, pvMin, pvMax, markers };
+  }, [pnlHistory, fills, startingCapital]);
+
+  const chartPath = chartGeometry.path;
+  const chartFill = chartGeometry.fillPath;
+  const chartMarkers = chartGeometry.markers;
 
   // Briefing headline
   const headline = (() => {
@@ -718,8 +835,8 @@ export default function MissionControlPage() {
                     <span className={`ch ${totalPnl >= 0 ? "" : "dn"}`}>{fmtPct(totalPnl / startingCapital)}</span>
                   </div>
                 </div>
-                <div className="chart-wrap">
-                  <svg viewBox="0 0 760 180" preserveAspectRatio="none">
+                <div className="chart-wrap" style={{ position: "relative" }}>
+                  <svg viewBox="0 0 760 180" preserveAspectRatio="none" style={{ overflow: "visible" }}>
                     <defs>
                       <linearGradient id="pnlFill" x1="0" x2="0" y1="0" y2="1">
                         <stop offset="0%" stopColor="rgba(244,245,247,0.22)" />
@@ -733,14 +850,87 @@ export default function MissionControlPage() {
                     <line x1="0" y1="90" x2="760" y2="90" stroke="rgba(255,255,255,.14)" strokeDasharray="2 3" strokeWidth=".75" />
                     {chartFill && <path d={chartFill} fill="url(#pnlFill)" />}
                     {chartPath && <path d={chartPath} fill="none" stroke="#F4F5F7" strokeWidth="1.3" />}
+
+                    {/* Trade markers — filled = circle, rejected = hollow ring.
+                        Click/hover surfaces the details in the callout below. */}
+                    {chartMarkers.map((m, i) => {
+                      const isBuy = (m.side || "").toUpperCase() === "BUY";
+                      const isRejected = (m.status || "").toUpperCase() === "REJECTED";
+                      const color = isRejected
+                        ? "rgba(255,255,255,.35)"
+                        : isBuy ? "var(--accent-profit)" : "var(--accent-loss)";
+                      return (
+                        <g key={m.order_id + i}
+                          style={{ cursor: "pointer" }}
+                          onMouseEnter={() => setHoveredFill(m)}
+                          onMouseLeave={() => setHoveredFill(null)}>
+                          {/* Vertical connector line up from the x-axis */}
+                          <line x1={m.x} y1={m.y} x2={m.x} y2={180} stroke={color} strokeWidth=".5" strokeDasharray="1 2" opacity=".35" />
+                          <circle cx={m.x} cy={m.y} r={isRejected ? 3.5 : 4}
+                            fill={isRejected ? "transparent" : color}
+                            stroke={color} strokeWidth="1.5" />
+                          {/* Side label near the marker — small so it doesn't crowd */}
+                          <text x={m.x} y={isBuy ? m.y - 8 : m.y + 14}
+                            textAnchor="middle" fontSize="8" fontFamily="var(--font-mono)"
+                            fontWeight="600" fill={color}
+                            style={{ letterSpacing: ".14em" }}>
+                            {isBuy ? "▲" : "▼"}
+                          </text>
+                        </g>
+                      );
+                    })}
                   </svg>
                   <div className="y-ax">
-                    <div className="r">${fmt(Math.max(...(chartPoints.length ? chartPoints : [startingCapital])), 0)}</div>
-                    <div className="r" style={{ opacity: .5 }}>${fmt(startingCapital + (totalValue - startingCapital) * 0.5, 0)}</div>
+                    <div className="r">${fmt(chartGeometry.pvMax, 0)}</div>
+                    <div className="r" style={{ opacity: .5 }}>${fmt((chartGeometry.pvMax + chartGeometry.pvMin) / 2, 0)}</div>
                     <div className="r" style={{ color: "var(--text-tertiary)" }}>${fmt(startingCapital, 0)}</div>
-                    <div className="r" style={{ opacity: .5 }}>${fmt(startingCapital - 50, 0)}</div>
-                    <div className="r">${fmt(Math.min(...(chartPoints.length ? chartPoints : [startingCapital])), 0)}</div>
+                    <div className="r" style={{ opacity: .5 }}>${fmt((chartGeometry.pvMax + chartGeometry.pvMin) / 2 - (chartGeometry.pvMax - startingCapital), 0)}</div>
+                    <div className="r">${fmt(chartGeometry.pvMin, 0)}</div>
                   </div>
+
+                  {/* Hover callout */}
+                  {hoveredFill && (
+                    <div style={{
+                      position: "absolute", top: 8, right: 8,
+                      background: "rgba(10,13,19,.95)", border: "1px solid var(--line-soft)",
+                      borderRadius: 6, padding: "10px 14px", minWidth: 220, zIndex: 5,
+                      backdropFilter: "blur(6px)",
+                      boxShadow: "0 8px 24px rgba(0,0,0,.5)",
+                    }}>
+                      <div style={{
+                        fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: ".14em",
+                        textTransform: "uppercase", color: "var(--text-tertiary)", marginBottom: 6,
+                      }}>
+                        {new Date(hoveredFill.ts).toISOString().slice(11, 19)}
+                      </div>
+                      <div style={{ fontSize: 13, fontFamily: "var(--font-mono)", marginBottom: 4 }}>
+                        <b style={{ color: "var(--text-primary)" }}>{hoveredFill.symbol}</b>{" "}
+                        <span style={{
+                          color: hoveredFill.side.toUpperCase() === "BUY" ? "var(--accent-profit)" : "var(--accent-loss)",
+                          fontWeight: 600, letterSpacing: ".08em",
+                        }}>{hoveredFill.side}</span>
+                      </div>
+                      <div style={{ fontSize: 12, fontFamily: "var(--font-mono)", color: "var(--text-secondary)" }}>
+                        qty {fmt(hoveredFill.quantity, 4)} @ ${fmt(hoveredFill.price, 4)}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 4 }}>
+                        {hoveredFill.agent_id ?? "system"} · {hoveredFill.status}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Marker count footer */}
+                  {chartMarkers.length > 0 && (
+                    <div style={{
+                      position: "absolute", bottom: 6, left: 24,
+                      fontFamily: "var(--font-mono)", fontSize: 9.5,
+                      color: "var(--text-muted)", letterSpacing: "-.005em",
+                    }}>
+                      {chartMarkers.length} fill{chartMarkers.length !== 1 ? "s" : ""} ·{" "}
+                      <span style={{ color: "var(--accent-profit)" }}>▲</span> buy ·{" "}
+                      <span style={{ color: "var(--accent-loss)" }}>▼</span> sell
+                    </div>
+                  )}
                 </div>
                 <div className="chart-footer">
                   <div className="item">
