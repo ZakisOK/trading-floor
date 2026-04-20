@@ -677,6 +677,36 @@ aside.rail {
 .queue-row .d { color: var(--accent-profit); font-size: 10px; font-weight: 500; letter-spacing: .04em; text-transform: uppercase; }
 .queue-row .d.pend { color: var(--text-muted); font-weight: 400; }
 
+/* ─── Loading skeleton ─────────────────────────────────────────────────
+ * Shown on first paint until the first data fetch lands. The shimmer
+ * runs on a monochrome linear-gradient so it doesn't flash colour.
+ * ──────────────────────────────────────────────────────────────────── */
+.skel {
+  position: relative; overflow: hidden;
+  background: rgba(255,255,255,.025); border-radius: 6px;
+}
+.skel::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,.05) 50%, transparent 100%);
+  transform: translateX(-100%);
+  animation: shimmer 1.4s linear infinite;
+}
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
+}
+
+.loader-pulse {
+  display: inline-flex; align-items: center; gap: 10px;
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: .18em;
+  color: var(--text-tertiary); text-transform: uppercase;
+}
+.loader-pulse .pip {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent-profit);
+  box-shadow: 0 0 8px var(--accent-profit);
+  animation: pulse 1.4s infinite;
+}
+
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.05); border-radius: 6px; }

@@ -3,6 +3,7 @@ import { useState } from "react";
 import { LiveView } from "@/components/floor/LiveView";
 import { AgentGrid } from "@/components/floor/AgentGrid";
 import { SymbolConsensus } from "@/components/floor/SymbolConsensus";
+import { PageShell } from "@/components/PageShell";
 
 type Tab = "live" | "agents" | "symbols";
 
@@ -17,41 +18,27 @@ export default function FloorPage() {
   const current = TABS.find((t) => t.key === tab)!;
 
   return (
-    <div style={{ padding: "28px 32px", maxWidth: 1400, margin: "0 auto", minHeight: "100vh" }}>
-      <div style={{ marginBottom: 20 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 800, color: "var(--text-primary)", letterSpacing: "-0.02em", margin: "0 0 6px 0" }}>
-          Trading Floor
-        </h1>
-        <p style={{ fontSize: 13, color: "var(--text-tertiary)", margin: 0 }}>
-          {current.sub}
-        </p>
-      </div>
-
-      <div style={{ display: "flex", gap: 2, marginBottom: 20, borderBottom: "1px solid var(--border-subtle)" }}>
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            style={{
-              padding: "10px 18px",
-              background: "transparent",
-              border: "none",
-              borderBottom: `2px solid ${tab === t.key ? "var(--accent-primary)" : "transparent"}`,
-              color: tab === t.key ? "var(--text-primary)" : "var(--text-tertiary)",
-              fontSize: 13,
-              fontWeight: tab === t.key ? 600 : 400,
-              cursor: "pointer",
-              marginBottom: -1,
-            }}
-          >
-            {t.label}
-          </button>
-        ))}
+    <PageShell
+      crumbs={["The Firm", "Intelligence", "Trading Floor"]}
+      status={<div className="st"><span className="d ok" /> {current.sub}</div>}
+    >
+      <div className="mode-row">
+        <span className="flag">THE FLOOR</span>
+        <div className="msg">Visual and statistical views of what the agents are doing right now.</div>
+        <div className="tools">
+          <div className="seg">
+            {TABS.map((t) => (
+              <button key={t.key} className={tab === t.key ? "on" : ""} onClick={() => setTab(t.key)}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {tab === "live" && <LiveView />}
       {tab === "agents" && <AgentGrid />}
       {tab === "symbols" && <SymbolConsensus />}
-    </div>
+    </PageShell>
   );
 }

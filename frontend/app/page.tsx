@@ -5,6 +5,7 @@
 // to the live endpoints the docker stack already exposes; nothing is mocked.
 // ─────────────────────────────────────────────────────────────────────────────
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { DashSkeleton } from "@/components/DashSkeleton";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const WS_URL = (API.replace(/^http/, "ws")) + "/ws/stream";
@@ -202,6 +203,7 @@ export default function MissionControlPage() {
   const [streamFilter, setStreamFilter] = useState<string>("all");
   const [rangeKey, setRangeKey] = useState<string>("4h");
   const [cycleId, setCycleId] = useState<string>("—");
+  const [initialLoaded, setInitialLoaded] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const eventsRef = useRef<StreamEvent[]>([]);
 
@@ -277,6 +279,8 @@ export default function MissionControlPage() {
     };
     assign("XRP/USDT", xrpSent); assign("BTC/USDT", btcSent); assign("GC=F", gcSent);
     setSentimentBySymbol(sm);
+    // First fetch landed — lift the skeleton even if some endpoints failed.
+    setInitialLoaded(true);
   }, []);
 
   // Watchlist prices
@@ -560,6 +564,12 @@ export default function MissionControlPage() {
   };
 
   const nowUtc = new Date().toISOString().replace("T", " · ").slice(0, 16) + " UTC";
+
+  // First paint: show skeleton until the first fetch lands. Eliminates the
+  // ~7s of blank dashboard a cold connection used to produce.
+  if (!initialLoaded) {
+    return <DashSkeleton crumbs={["The Firm", "Mission Control"]} />;
+  }
 
   return (
     <>

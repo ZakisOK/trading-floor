@@ -1,4 +1,5 @@
 import { MarketExplorer } from "@/components/MarketExplorer";
+import { PageShell } from "@/components/PageShell";
 
 export const metadata = {
   title: "Market Explorer — The Trading Floor",
@@ -6,5 +7,12 @@ export const metadata = {
 };
 
 export default function MarketPage() {
-  return <MarketExplorer />;
+  return (
+    <PageShell
+      crumbs={["The Firm", "Markets", "Crypto"]}
+      status={<div className="st"><span className="d ok" /> OHLCV streaming</div>}
+    >
+      <MarketExplorer />
+    </PageShell>
+  );
 }

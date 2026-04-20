@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { PageShell, SectionHeader } from "@/components/PageShell";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -82,43 +83,42 @@ export default function CommoditiesPage() {
   }
 
   return (
-    <div style={{ padding: "28px 32px", maxWidth: 1200, margin: "0 auto" }}>
-      <div style={{ marginBottom: 18 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 800, color: "var(--text-primary)", letterSpacing: "-0.02em", margin: "0 0 6px 0" }}>
-          Commodities
-        </h1>
-        <p style={{ fontSize: 13, color: "var(--text-tertiary)", margin: 0 }}>
-          COMEX/NYMEX/CBOT futures quotes via Yahoo Finance (free, real-time-ish, 15-min delayed on some feeds). Metals, energy, grains. Paper-only — the broker refuses to route commodity orders to any live venue.
-        </p>
+    <PageShell
+      crumbs={["The Firm", "Markets", "Commodities"]}
+      status={<div className="st"><span className="d ok" /> Yahoo futures feed · paper-only</div>}
+    >
+      <div className="mode-row">
+        <span className="flag">PAPER ONLY</span>
+        <div className="msg">COMEX/NYMEX/CBOT futures quotes via Yahoo Finance. Metals, energy, grains. <b>Broker refuses to route commodity orders to any live venue.</b></div>
       </div>
 
-      {loading ? (
-        <div style={{ padding: 40, textAlign: "center", color: "var(--text-tertiary)" }}>Loading quotes…</div>
-      ) : (
-        Object.entries(byCategory).map(([cat, items]) => (
-          <div key={cat} style={{ marginBottom: 24 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 10 }}>
-              {cat}
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 12 }}>
-              {items.map((c) => {
+      {loading && (
+        <div className="loader-pulse" style={{ padding: "20px 0" }}>
+          <span className="pip" /><span>LOADING QUOTES…</span>
+        </div>
+      )}
+      {!loading && Object.entries(byCategory).map(([cat, items], idx) => (
+        <section key={cat}>
+          <SectionHeader n={`0${idx + 1}`} label={cat} title={`${cat} futures`} sub={`${items.length} symbol${items.length !== 1 ? "s" : ""}`} />
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 14 }}>
+            {items.map((c) => {
                 const q = quotes[c.symbol];
                 const sig = latestSignal(c.symbol);
                 const changeColor = !q ? "var(--text-tertiary)" : q.change >= 0 ? "var(--accent-profit)" : "var(--accent-loss)";
                 return (
-                  <div key={c.symbol} className="glass-panel" style={{ padding: "14px 16px" }}>
+                  <div key={c.symbol} className="card card-pad">
                     <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 8 }}>
                       <div>
-                        <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)" }}>{c.name}</div>
-                        <div style={{ fontSize: 10, color: "var(--text-tertiary)", fontFamily: "var(--font-mono, monospace)" }}>{c.symbol}</div>
+                        <div style={{ fontSize: 14, fontWeight: 500, color: "var(--text-primary)", letterSpacing: "-.01em" }}>{c.name}</div>
+                        <div style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)", letterSpacing: ".08em", textTransform: "uppercase" }}>{c.symbol}</div>
                       </div>
                       {q ? (
                         <div style={{ textAlign: "right" }}>
-                          <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-mono, monospace)", color: "var(--text-primary)" }}>
+                          <div style={{ fontSize: 18, fontFamily: "var(--font-mono)", color: "var(--text-primary)", letterSpacing: "-.024em" }}>
                             ${q.last.toFixed(2)}
                           </div>
-                          <div style={{ fontSize: 11, fontWeight: 600, color: changeColor, fontFamily: "var(--font-mono, monospace)" }}>
-                            {q.change >= 0 ? "+" : ""}${q.change.toFixed(2)} ({(q.change_pct * 100).toFixed(2)}%)
+                          <div style={{ fontSize: 11, color: changeColor, fontFamily: "var(--font-mono)", letterSpacing: "-.01em" }}>
+                            {q.change >= 0 ? "+" : ""}${q.change.toFixed(2)} · {(q.change_pct * 100).toFixed(2)}%
                           </div>
                         </div>
                       ) : (
@@ -126,12 +126,17 @@ export default function CommoditiesPage() {
                       )}
                     </div>
                     {sig && (
-                      <div style={{ paddingTop: 8, borderTop: "1px solid var(--border-subtle)" }}>
+                      <div style={{ paddingTop: 8, borderTop: "1px solid var(--line-hair)", marginTop: 6 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                          <span style={{ fontSize: 11, fontWeight: 700, color: directionColor(sig.direction) }}>{sig.direction}</span>
-                          <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{(sig.confidence * 100).toFixed(0)}% · {sig.agent}</span>
+                          <span className={`dirw ${sig.direction === "LONG" ? "" : ""}`} style={{
+                            fontFamily: "var(--font-mono)", fontSize: 9.5, letterSpacing: ".16em", fontWeight: 600,
+                            padding: "2px 6px", borderRadius: 3,
+                            background: sig.direction === "LONG" ? "var(--accent-profit-dim)" : sig.direction === "SHORT" ? "var(--accent-loss-dim)" : "rgba(148,163,184,.12)",
+                            color: directionColor(sig.direction),
+                          }}>{sig.direction}</span>
+                          <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>{(sig.confidence * 100).toFixed(0)}% · {sig.agent}</span>
                         </div>
-                        <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.4 }}>
+                        <div style={{ fontSize: 11.5, color: "var(--text-secondary)", lineHeight: 1.45 }}>
                           {sig.thesis.length > 160 ? sig.thesis.slice(0, 160) + "…" : sig.thesis}
                         </div>
                       </div>
@@ -139,10 +144,9 @@ export default function CommoditiesPage() {
                   </div>
                 );
               })}
-            </div>
           </div>
-        ))
-      )}
-    </div>
+        </section>
+      ))}
+    </PageShell>
   );
 }

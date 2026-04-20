@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
+import { PageShell, SectionHeader } from "@/components/PageShell";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -9,15 +10,9 @@ interface Order { order_id: string; symbol: string; side: string; quantity: numb
 interface Pending { id: string; symbol: string; side: string; agent_id: string; confidence: number; thesis: string }
 interface KillStatus { active: boolean; reason: string; activated_at: string }
 
-function PnlBadge({ val }: { val: number }) {
-  const color = val >= 0 ? "var(--accent-profit)" : "var(--accent-loss)";
-  return <span style={{ color, fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}>{val >= 0 ? "+" : ""}${val.toFixed(2)}</span>;
-}
-
-function SideBadge({ side }: { side: string }) {
-  const bg = side === "BUY" || side === "LONG" ? "rgba(88,214,141,0.15)" : "rgba(248,81,73,0.15)";
-  const color = side === "BUY" || side === "LONG" ? "var(--accent-profit)" : "var(--accent-loss)";
-  return <span style={{ background: bg, color, padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 700 }}>{side}</span>;
+function fmt(n: number | undefined, dec = 2) {
+  if (n == null || isNaN(n)) return "—";
+  return n.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec });
 }
 
 export default function ExecutionPage() {
@@ -41,12 +36,15 @@ export default function ExecutionPage() {
     try {
       const [port, pos, ord, ks] = await Promise.all([
         fetch(`${API}/api/orders/portfolio`).then(r => r.json()),
-        fetch(`${API}/api/orders/positions`).then(r => r.json()),
+        fetch(`${API}/api/execution/positions`).then(r => r.json()),
         fetch(`${API}/api/orders`).then(r => r.json()),
         fetch(`${API}/api/orders/kill/status`).then(r => r.json()),
       ]);
-      setPortfolio(port); setPositions(pos); setOrders(ord); setKillStatus(ks);
-    } catch {}
+      setPortfolio(port);
+      setPositions(Array.isArray(pos) ? pos : pos?.positions ?? []);
+      setOrders(Array.isArray(ord) ? ord : ord?.orders ?? []);
+      setKillStatus(ks);
+    } catch { /* swallow */ }
   }, []);
 
   useEffect(() => { fetchAll(); const iv = setInterval(fetchAll, 3000); return () => clearInterval(iv); }, [fetchAll]);
@@ -59,142 +57,189 @@ export default function ExecutionPage() {
     });
     if (r.ok) { toast("Kill switch activated — all positions flattened", "var(--accent-loss)"); setShowKillConfirm(false); setKillInput(""); fetchAll(); }
   }
-
   async function resetKill() {
     await fetch(`${API}/api/orders/kill/reset`, { method: "POST" });
     toast("Kill switch reset — trading resumed");
     fetchAll();
   }
-
   async function approve(id: string) {
     const r = await fetch(`${API}/api/orders/approve/${id}`, { method: "POST" });
     if (r.ok) { toast("Signal approved and executed"); setPending(p => p.filter(x => x.id !== id)); }
   }
-
   async function reject(id: string) {
     await fetch(`${API}/api/orders/reject/${id}`, { method: "POST" });
     toast("Signal rejected", "var(--text-tertiary)");
     setPending(p => p.filter(x => x.id !== id));
   }
 
-  const mono = { fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" as const };
-  const card = { background: "var(--bg-surface-1)", border: "1px solid var(--border-default)", borderRadius: "var(--radius-md)", padding: "16px 20px" };
+  const winRate = 0;
 
   return (
-    <div style={{ minHeight: "100vh", background: "var(--bg-void)", color: "var(--text-primary)", padding: "32px", fontFamily: "var(--font-sans)" }}>
+    <PageShell
+      crumbs={["The Firm", "Intelligence", "Execution"]}
+      status={<>
+        <div className="st"><span className={`d ${killStatus.active ? "warn" : "ok"}`} />
+          {killStatus.active ? "KILL SWITCH ACTIVE" : "Order flow live"}
+        </div>
+        <div className="st">{portfolio.trade_count} trades · {positions.length} open</div>
+      </>}
+    >
+      {/* Toasts */}
       <style>{`@keyframes slideIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}`}</style>
-
-      {/* Toast notifications */}
       <div style={{ position: "fixed", top: 20, right: 20, zIndex: 999, display: "flex", flexDirection: "column", gap: 8 }}>
         {toasts.map(t => (
           <div key={t.id} style={{ background: "var(--bg-surface-2)", border: `1px solid ${t.color}`, borderRadius: "var(--radius-sm)", padding: "10px 16px", fontSize: 13, color: t.color, animation: "slideIn 0.3s ease", minWidth: 240 }}>{t.msg}</div>
         ))}
       </div>
 
-      <div style={{ maxWidth: 1200, margin: "0 auto" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 24 }}>
-          <div>
-            <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 4 }}>Execution Monitor</h1>
-            <p style={{ color: "var(--text-secondary)" }}>Live paper trading — order flow and positions</p>
+      {/* Kill switch banner */}
+      {killStatus.active && (
+        <div className="mode-row" style={{ borderColor: "var(--accent-loss)", background: "rgba(248,113,113,.08)" }}>
+          <span className="flag" style={{ color: "var(--accent-loss)" }}>KILL SWITCH ACTIVE</span>
+          <div className="msg"><b>{killStatus.reason || "Manual activation"}</b> — all orders suspended</div>
+          <div className="tools">
+            <button className="btn-ghost" onClick={resetKill}>Reset kill switch</button>
           </div>
-          {/* Kill switch */}
-          {killStatus.active ? (
-            <button onClick={resetKill} style={{ background: "rgba(88,214,141,0.15)", border: "2px solid var(--accent-profit)", borderRadius: "var(--radius-sm)", color: "var(--accent-profit)", padding: "10px 24px", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
-              Reset Kill Switch
-            </button>
-          ) : (
-            <div>
-              {!showKillConfirm ? (
-                <button onClick={() => setShowKillConfirm(true)} style={{ background: "rgba(248,81,73,0.15)", border: "2px solid var(--accent-loss)", borderRadius: "var(--radius-sm)", color: "var(--accent-loss)", padding: "10px 24px", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
-                  KILL SWITCH
-                </button>
-              ) : (
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <input value={killInput} onChange={e => setKillInput(e.target.value)} placeholder="Type KILL to confirm"
-                    style={{ background: "var(--bg-surface-2)", border: "2px solid var(--accent-loss)", borderRadius: "var(--radius-sm)", color: "var(--text-primary)", padding: "8px 12px", fontSize: 13, width: 180 }} />
-                  <button onClick={activateKill} disabled={killInput !== "KILL"} style={{ background: killInput === "KILL" ? "var(--accent-loss)" : "var(--bg-surface-3)", color: "#fff", border: "none", borderRadius: "var(--radius-sm)", padding: "8px 16px", cursor: killInput === "KILL" ? "pointer" : "not-allowed", fontWeight: 700, fontSize: 13 }}>Confirm</button>
-                  <button onClick={() => { setShowKillConfirm(false); setKillInput(""); }} style={{ background: "none", border: "1px solid var(--border-default)", borderRadius: "var(--radius-sm)", color: "var(--text-secondary)", padding: "8px 14px", cursor: "pointer", fontSize: 13 }}>Cancel</button>
+        </div>
+      )}
+
+      {/* Top figure row */}
+      <div className="briefing">
+        <div className="left">
+          <div className="eyebrow"><span className="num">01</span><span>·</span><span>Execution monitor</span>
+            <span style={{ marginLeft: "auto", color: "var(--text-muted)" }}>Live paper · sim venue</span>
+          </div>
+          <p className="headline">
+            Live order flow from Atlas. Kill switch cuts all open positions in &lt; 60s. Operator approvals queue here
+            when autonomy is <b>COMMANDER</b>.
+          </p>
+          <div className="figure-stack">
+            <span className="lbl">Portfolio</span>
+            <span className="big">
+              ${fmt(Math.floor(portfolio.total), 0)}
+              <span className="cents">.{String(Math.floor((portfolio.total % 1) * 100)).padStart(2, "0")}</span>
+            </span>
+            <span className="delta">
+              <span className={`v ${portfolio.daily_pnl >= 0 ? "up" : "dn"}`}>
+                {portfolio.daily_pnl >= 0 ? "+" : "−"}${fmt(Math.abs(portfolio.daily_pnl))}
+              </span>
+              <span>today</span>
+            </span>
+          </div>
+        </div>
+        <div className="right">
+          <div className="cell"><div className="k"><span>Cash</span><span className="n">02</span></div><div className="v">${fmt(portfolio.cash, 0)}</div><div className="sub"><span>Available</span></div></div>
+          <div className="cell"><div className="k"><span>Positions value</span><span className="n">03</span></div><div className="v">${fmt(portfolio.positions_value, 0)}</div><div className="sub"><span>{positions.length} open</span></div></div>
+          <div className="cell"><div className="k"><span>Trades today</span><span className="n">04</span></div><div className="v">{portfolio.trade_count}</div><div className="sub"><span>Since 00:00 UTC</span></div></div>
+          <div className="cell"><div className="k"><span>Kill state</span><span className="n">05</span></div>
+            <div className={`v ${killStatus.active ? "dn" : "up"}`}>{killStatus.active ? "ACTIVE" : "READY"}</div>
+            <div className="sub">
+              {!killStatus.active && !showKillConfirm && (
+                <button className="btn-ghost" onClick={() => setShowKillConfirm(true)} style={{ color: "var(--accent-loss)", borderColor: "var(--accent-loss)" }}>Arm kill switch</button>
+              )}
+              {!killStatus.active && showKillConfirm && (
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input value={killInput} onChange={e => setKillInput(e.target.value)} placeholder="Type KILL"
+                    style={{ background: "var(--bg-surface-2)", border: "1px solid var(--accent-loss)", borderRadius: 4, color: "var(--text-primary)", padding: "4px 8px", fontSize: 11, width: 90 }} />
+                  <button className="btn-ghost" onClick={activateKill} style={{ color: "var(--accent-loss)", borderColor: "var(--accent-loss)" }}>Confirm</button>
+                  <button className="btn-ghost" onClick={() => { setShowKillConfirm(false); setKillInput(""); }}>×</button>
                 </div>
               )}
             </div>
-          )}
-        </div>
-
-        {/* Kill switch banner */}
-        {killStatus.active && (
-          <div style={{ marginBottom: 20, padding: "14px 20px", background: "rgba(248,81,73,0.12)", border: "2px solid var(--accent-loss)", borderRadius: "var(--radius-md)", color: "var(--accent-loss)", fontWeight: 700 }}>
-            KILL SWITCH ACTIVE — {killStatus.reason} — All orders suspended
-          </div>
-        )}
-
-        {/* Portfolio summary */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 20 }}>
-          {[
-            { l: "Total Value", v: `$${portfolio.total.toLocaleString("en", { minimumFractionDigits: 2 })}` },
-            { l: "Cash", v: `$${portfolio.cash.toLocaleString("en", { minimumFractionDigits: 2 })}` },
-            { l: "Positions", v: `$${portfolio.positions_value.toFixed(2)}` },
-            { l: "Daily P&L", v: null, pnl: portfolio.daily_pnl },
-            { l: "Trades Today", v: String(portfolio.trade_count) },
-          ].map(m => (
-            <div key={m.l} style={card}>
-              <div style={{ fontSize: 11, color: "var(--text-tertiary)", textTransform: "uppercase", marginBottom: 6 }}>{m.l}</div>
-              <div style={{ ...mono, fontSize: 18, fontWeight: 700 }}>
-                {m.pnl !== undefined ? <PnlBadge val={m.pnl} /> : m.v}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Pending approvals */}
-        {pending.length > 0 && (
-          <div className="glass-panel" style={{ padding: 20, marginBottom: 20, borderColor: "rgba(94,106,210,0.3)" }}>
-            <div style={{ fontSize: 11, color: "var(--accent-primary)", textTransform: "uppercase", marginBottom: 12 }}>Pending Approvals ({pending.length})</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {pending.map(s => (
-                <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: "var(--bg-surface-2)", borderRadius: "var(--radius-sm)" }}>
-                  <span style={{ ...mono, fontSize: 13, minWidth: 90 }}>{s.symbol}</span>
-                  <SideBadge side={s.side} />
-                  <span style={{ fontSize: 12, color: "var(--text-secondary)", flex: 1 }}>{s.thesis?.slice(0, 80)}</span>
-                  <span style={{ ...mono, fontSize: 12, color: "var(--text-tertiary)", minWidth: 40 }}>{(s.confidence * 100).toFixed(0)}%</span>
-                  <button onClick={() => approve(s.id)} style={{ background: "rgba(88,214,141,0.15)", border: "1px solid var(--accent-profit)", color: "var(--accent-profit)", borderRadius: "var(--radius-sm)", padding: "4px 12px", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Approve</button>
-                  <button onClick={() => reject(s.id)} style={{ background: "rgba(248,81,73,0.1)", border: "1px solid var(--accent-loss)", color: "var(--accent-loss)", borderRadius: "var(--radius-sm)", padding: "4px 12px", cursor: "pointer", fontSize: 12 }}>Reject</button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Positions + Orders in two columns */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-          <div className="glass-panel" style={{ padding: 20 }}>
-            <div style={{ fontSize: 11, color: "var(--text-tertiary)", textTransform: "uppercase", marginBottom: 12 }}>Open Positions</div>
-            {positions.length === 0 ? <div style={{ color: "var(--text-tertiary)", fontSize: 13, textAlign: "center", padding: 16 }}>No open positions</div> : (
-              positions.map((p, i) => (
-                <div key={i} style={{ padding: "8px 0", borderBottom: "1px solid var(--border-subtle)", display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ ...mono, fontSize: 13 }}>{p.symbol}</span>
-                  <SideBadge side={p.side} />
-                  <span style={{ ...mono, fontSize: 13, color: "var(--text-secondary)" }}>{p.quantity?.toFixed(4)}</span>
-                  <span style={{ ...mono, fontSize: 13 }}>${p.avg_price?.toFixed(2)}</span>
-                </div>
-              ))
-            )}
-          </div>
-          <div className="glass-panel" style={{ padding: 20 }}>
-            <div style={{ fontSize: 11, color: "var(--text-tertiary)", textTransform: "uppercase", marginBottom: 12 }}>Order History (last 20)</div>
-            {orders.length === 0 ? <div style={{ color: "var(--text-tertiary)", fontSize: 13, textAlign: "center", padding: 16 }}>No orders yet</div> : (
-              orders.slice(-20).reverse().map(o => (
-                <div key={o.order_id} style={{ padding: "7px 0", borderBottom: "1px solid var(--border-subtle)", display: "flex", gap: 8, alignItems: "center" }}>
-                  <span style={{ ...mono, fontSize: 11, color: "var(--text-tertiary)", minWidth: 60 }}>{new Date(o.created_at).toLocaleTimeString()}</span>
-                  <span style={{ ...mono, fontSize: 12, minWidth: 70 }}>{o.symbol}</span>
-                  <SideBadge side={o.side} />
-                  <span style={{ ...mono, fontSize: 12, color: "var(--text-secondary)" }}>${o.filled_price?.toFixed(2)}</span>
-                  <span style={{ fontSize: 11, color: "var(--text-tertiary)", marginLeft: "auto" }}>{o.agent_id}</span>
-                </div>
-              ))
-            )}
           </div>
         </div>
       </div>
-    </div>
+
+      {/* Pending approvals */}
+      {pending.length > 0 && (
+        <section>
+          <SectionHeader n="02" label="Approvals" title={`${pending.length} pending`} sub="COMMANDER mode — approve or reject each signal" />
+          <div className="card card-pad">
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {pending.map(s => {
+                const isLong = s.side === "BUY" || s.side === "LONG";
+                return (
+                  <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: "rgba(0,0,0,.28)", border: "1px solid var(--line-hair)", borderRadius: 7 }}>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, minWidth: 90 }}>{s.symbol}</span>
+                    <span className={`side ${isLong ? "long" : "short"}`} style={{ fontFamily: "var(--font-mono)", fontSize: 10 }}>
+                      <span style={{ padding: "2px 7px", borderRadius: 3, background: isLong ? "var(--accent-profit-dim)" : "var(--accent-loss-dim)", color: isLong ? "var(--accent-profit)" : "var(--accent-loss)", fontWeight: 600, letterSpacing: ".14em" }}>{s.side}</span>
+                    </span>
+                    <span style={{ fontSize: 12, color: "var(--text-secondary)", flex: 1 }}>{s.thesis?.slice(0, 80)}</span>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text-tertiary)", minWidth: 40 }}>{(s.confidence * 100).toFixed(0)}%</span>
+                    <button className="btn-ghost" style={{ color: "var(--accent-profit)", borderColor: "var(--accent-profit)" }} onClick={() => approve(s.id)}>Approve</button>
+                    <button className="btn-ghost" onClick={() => reject(s.id)}>Reject</button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Open positions */}
+      <section>
+        <SectionHeader n={pending.length > 0 ? "03" : "02"} label="Book" title="Open positions" sub={`${positions.length} position${positions.length !== 1 ? "s" : ""}`} />
+        <div className="card positions-card">
+          <table className="positions">
+            <thead>
+              <tr>
+                <th style={{ width: 28 }}>#</th>
+                <th>Symbol</th>
+                <th>Side</th>
+                <th className="r">Qty</th>
+                <th className="r">Entry</th>
+                <th className="r">Mark</th>
+                <th className="r">Unreal P&amp;L</th>
+              </tr>
+            </thead>
+            <tbody>
+              {positions.length === 0 && (
+                <tr><td colSpan={7} style={{ textAlign: "center", padding: "28px 14px", color: "var(--text-tertiary)" }}>No open positions</td></tr>
+              )}
+              {positions.map((p, i) => {
+                const isLong = p.side === "LONG" || p.side === "BUY";
+                const upnl = p.unrealized_pnl ?? 0;
+                return (
+                  <tr key={p.symbol + i}>
+                    <td style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 10.5 }}>{String(i + 1).padStart(2, "0")}</td>
+                    <td className="sym">{p.symbol}</td>
+                    <td className={`side ${isLong ? "long" : "short"}`}><span>{p.side}</span></td>
+                    <td className="r mono">{fmt(p.quantity, 4)}</td>
+                    <td className="r mono">${fmt(p.avg_price, 4)}</td>
+                    <td className="r mono strong">${fmt(p.current_price, 4)}</td>
+                    <td className={`r pnl ${upnl >= 0 ? "up" : "dn"}`}>{upnl >= 0 ? "+" : "−"}${fmt(Math.abs(upnl))}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* Order history */}
+      <section>
+        <SectionHeader n={pending.length > 0 ? "04" : "03"} label="History" title="Order flow" sub={`Last ${Math.min(20, orders.length)} of ${orders.length}`} />
+        <div className="card stream-card">
+          <div className="stream-body">
+            {orders.length === 0 && (
+              <div style={{ padding: "20px 24px", color: "var(--text-tertiary)", fontSize: 13 }}>No orders yet</div>
+            )}
+            {orders.slice(-20).reverse().map(o => {
+              const isLong = o.side === "BUY" || o.side === "LONG";
+              return (
+                <div key={o.order_id} className="stream-row">
+                  <span className="t">{new Date(o.created_at).toISOString().slice(11, 19)}</span>
+                  <span className={`tag ${isLong ? "tag-trd" : "tag-rsk"}`}>{o.side}</span>
+                  <span className="msg">
+                    <b>{o.symbol}</b> · qty {fmt(o.quantity, 4)} @ ${fmt(o.filled_price, 4)} · agent {o.agent_id} · {o.status}
+                  </span>
+                  <span className="id">{o.order_id.slice(0, 8)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+    </PageShell>
   );
 }
