@@ -1,0 +1,21 @@
+[Unit]
+Description=Trading Floor Episode Writer (stream:episodes -> agent_episodes)
+After=trading-floor.service redis.service postgres.service
+Requires=trading-floor.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/trading-floor
+ExecStart=/opt/trading-floor/.venv/bin/python scripts/run_episode_writer.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Episode loss is preferable to cycle loss (per spec B4) so a brief restart
+# loop is acceptable, but cap so we don't thrash if Postgres is genuinely down.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Install]
+WantedBy=multi-user.target

@@ -181,7 +181,25 @@ class CycleRunner:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=sleep_for)
 
     async def _run_one_cycle(self, symbol: str) -> None:
-        market_data = self._last_bar.get(symbol, {"symbol": symbol})
+        market_data = dict(self._last_bar.get(symbol) or {"symbol": symbol})
+        # If the WebSocket cache has no bar for this symbol (market closed,
+        # crypto not on the equities feed, cold start), fall back to a REST
+        # fetch so agents have SOMETHING to analyze. Without a price, Claude
+        # correctly returns NEUTRAL 0.0 on every cycle and the pipeline never
+        # produces a signal.
+        if not market_data.get("close") and not market_data.get("price"):
+            try:
+                from src.data.feeds.price_source import fetch_price
+
+                price = await fetch_price(symbol)
+                if price:
+                    market_data["price"] = float(price)
+                    market_data["close"] = float(price)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "cycle_price_fetch_failed", symbol=symbol, error=str(exc)
+                )
+
         try:
             result = await run_trading_cycle(symbol, market_data)
             logger.info(
@@ -190,6 +208,7 @@ class CycleRunner:
                 approved=result.get("risk_approved"),
                 confidence=result.get("confidence"),
                 signals=len(result.get("signals", [])),
+                price=market_data.get("close"),
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("cycle_error", symbol=symbol, error=str(exc))

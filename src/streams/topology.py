@@ -35,6 +35,18 @@ AUDIT = "stream:audit"
 ALERTS = "stream:alerts"
 
 # ---------------------------------------------------------------------------
+# Memory layer (Week 1 / B4)
+# Every agent invocation produces one episode. Drained by EpisodeWriter into
+# Postgres agent_episodes hypertable.
+# ---------------------------------------------------------------------------
+EPISODES = "stream:episodes"
+
+# Bounded length so a long Postgres outage cannot exhaust Redis memory.
+# Roughly: 100k episodes / (10 agents * 60 cycles/hour) = ~166 hours of buffer
+# at the current cadence. Producer uses XADD ... MAXLEN ~ EPISODES_MAXLEN.
+EPISODES_MAXLEN = 100_000
+
+# ---------------------------------------------------------------------------
 # Consumer groups
 # ---------------------------------------------------------------------------
 CONSUMER_GROUPS: dict[str, str] = {
@@ -46,4 +58,6 @@ CONSUMER_GROUPS: dict[str, str] = {
     "audit_writer": "cg:audit_writer",
     "trade_desk": "cg:trade_desk",           # Desk 2 consumer group
     "learning_layer": "cg:learning_layer",   # Learning layer consumer group
+    "episode_writer": "cg:episode_writer",   # Memory layer consumer group (Week 1)
+    "outcome_writer": "cg:outcome_writer",   # Outcomes consumer group (Week 2 / B2)
 }

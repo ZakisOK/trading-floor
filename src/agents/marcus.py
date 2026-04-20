@@ -11,9 +11,22 @@ from src.core.config import settings
 logger = structlog.get_logger()
 
 
+_PROMPT_SKELETON = (
+    "You are Marcus, a fundamentals analyst at a trading firm.\n"
+    "Symbol/price/market context vary per cycle.\n"
+    "Output schema: direction, confidence, thesis, risk."
+)
+
+
 class MarcusAgent(BaseAgent):
     def __init__(self) -> None:
-        super().__init__("marcus", "Marcus", "Fundamentals Analyst")
+        super().__init__(
+            "marcus",
+            "Marcus",
+            "Fundamentals Analyst",
+            model_name="claude-haiku-4-5-20251001",
+            prompt_template=_PROMPT_SKELETON,
+        )
         self._client = make_tracked_client(api_key=settings.anthropic_api_key)
 
     async def analyze(self, state: AgentState) -> AgentState:

@@ -22,9 +22,23 @@ Key XRP fundamentals to consider:
 """
 
 
+_PROMPT_SKELETON = (
+    "XRP specialist analyst. Considers ODL, escrow releases, XRPL DEX, "
+    "regulatory state, BTC correlation. "
+    f"Static context block:\n{XRP_CONTEXT}\n"
+    "Output schema: direction, confidence, thesis, risk, timeframe."
+)
+
+
 class XRPAnalystAgent(BaseAgent):
     def __init__(self):
-        super().__init__("xrp_analyst", "XRP Analyst", "XRP Specialist")
+        super().__init__(
+            "xrp_analyst",
+            "XRP Analyst",
+            "XRP Specialist",
+            model_name="claude-haiku-4-5-20251001",
+            prompt_template=_PROMPT_SKELETON,
+        )
         self._client = make_tracked_client(api_key=settings.anthropic_api_key)
         self._xrpl_feed = XRPLFeed()
 

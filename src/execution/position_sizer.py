@@ -10,10 +10,20 @@ Elite firms (Bridgewater, AQR) use this because:
 Gap 1 (Fink recommendation): Liquidity filter ensures no position exceeds
 1% of the symbol's 24-hour traded volume. At scale, ignoring liquidity
 destroys the ability to exit cleanly — the #1 failure mode of retail algos.
+
+Week 1 / A4: ``PositionSizer`` is a thin wrapper around
+``VolatilityPositionSizer`` exposing a signal-oriented API
+``size(signal, market_data, portfolio) -> SizedOrder`` that callers
+(currently Atlas, in Week 2 PortfolioConstructor) invoke BEFORE broker
+dispatch. The broker no longer sizes positions — it executes whatever it's
+told. This closes the bug where Atlas passed quantity=0 to Alpaca and the
+sizer never ran.
 """
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
+from typing import Any
 
 import structlog
 
@@ -213,3 +223,123 @@ class VolatilityPositionSizer:
             final_quantity=round(quantity, 6),
         )
         return quantity
+
+
+# ---------------------------------------------------------------------------
+# Week 1 / A4 — signal-oriented sizer API
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SizedOrder:
+    """Result of sizing — the broker executes this verbatim.
+
+    ``confidence_adjusted_risk_pct`` documents the per-trade risk percentage
+    the sizer used (after confidence weighting). Stored with the order so
+    Week 2's PortfolioConstructor can audit sizing decisions over time.
+    """
+
+    symbol: str
+    side: str  # "BUY" or "SELL"
+    quantity: float
+    notional: float
+    price: float
+    confidence_adjusted_risk_pct: float
+    annualized_vol: float
+
+
+class PositionSizer:
+    """Signal-oriented sizing facade.
+
+    Atlas (Week 1) and PortfolioConstructor (Week 2) call ``size()`` BEFORE
+    broker dispatch. Returning ``quantity == 0`` means "do not trade" —
+    typically because portfolio_value is zero or the symbol is illiquid.
+    A zero quantity reaching the broker is a bug, not a pattern.
+    """
+
+    def __init__(self, vol_sizer: VolatilityPositionSizer | None = None) -> None:
+        self._vol_sizer = vol_sizer or VolatilityPositionSizer()
+
+    async def size(
+        self,
+        signal: dict[str, Any],
+        market_data: dict[str, Any],
+        portfolio: dict[str, Any],
+    ) -> SizedOrder:
+        """Size a directional signal against current portfolio + market state.
+
+        Args:
+            signal: ``{"symbol", "direction", "confidence", ...}``.
+                ``direction`` is "LONG", "SHORT", or "NEUTRAL". NEUTRAL or
+                missing direction returns quantity=0.
+            market_data: ``{"symbol", "price"|"close", ...}``.
+            portfolio: ``{"portfolio_value", ...}`` — typically the venue's
+                portfolio_value snapshot.
+        """
+        symbol = signal.get("symbol") or market_data.get("symbol", "UNKNOWN")
+        direction = (signal.get("direction") or "NEUTRAL").upper()
+        confidence = float(signal.get("confidence") or 0.0)
+        price = float(
+            market_data.get("price")
+            or market_data.get("close")
+            or market_data.get("last")
+            or 0.0
+        )
+        portfolio_value = float(portfolio.get("portfolio_value") or 0.0)
+
+        side = "BUY" if direction == "LONG" else "SELL" if direction == "SHORT" else ""
+
+        if not side or price <= 0 or portfolio_value <= 0:
+            logger.info(
+                "sized_zero",
+                symbol=symbol, direction=direction,
+                price=price, portfolio_value=portfolio_value,
+            )
+            return SizedOrder(
+                symbol=symbol, side=side or "BUY", quantity=0.0, notional=0.0,
+                price=price, confidence_adjusted_risk_pct=0.0, annualized_vol=0.0,
+            )
+
+        # Confidence weighting: the configured max risk is the cap; lower
+        # confidence reduces it linearly. A 50%-confidence signal sizes at
+        # half the max risk, a 90%-confidence signal at 90% of max.
+        target_risk_pct = settings.max_risk_per_trade * max(0.0, min(confidence, 1.0))
+
+        annualized_vol = await self._vol_sizer.get_volatility(symbol)
+        # raw quantity using risk-parity formula
+        dollar_risk = portfolio_value * target_risk_pct
+        raw_quantity = dollar_risk / (price * max(annualized_vol, 0.01))
+        # Bracket: minimum trade is 0.1% of portfolio, maximum is 3x target risk
+        min_qty = (portfolio_value * 0.001) / price
+        max_qty = (portfolio_value * target_risk_pct * 3) / price
+        quantity = max(min_qty, min(raw_quantity, max_qty))
+        # Liquidity cap (1% of 24h volume)
+        quantity = await self._vol_sizer._apply_liquidity_cap(symbol, quantity, price)
+
+        notional = quantity * price
+        logger.info(
+            "sized",
+            symbol=symbol, side=side,
+            quantity=round(quantity, 6), notional=round(notional, 2),
+            confidence=confidence,
+            confidence_adjusted_risk_pct=round(target_risk_pct, 6),
+            annualized_vol=round(annualized_vol, 6),
+        )
+        return SizedOrder(
+            symbol=symbol, side=side, quantity=quantity, notional=notional,
+            price=price, confidence_adjusted_risk_pct=target_risk_pct,
+            annualized_vol=annualized_vol,
+        )
+
+
+# Singleton — cheap, no state.
+position_sizer = PositionSizer()
+
+
+__all__ = [
+    "MAX_VOLUME_PARTICIPATION",
+    "PositionSizer",
+    "SizedOrder",
+    "VolatilityPositionSizer",
+    "position_sizer",
+]

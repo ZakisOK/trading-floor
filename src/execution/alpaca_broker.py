@@ -9,6 +9,7 @@ translated to `BTC/USD` for Alpaca. Alpaca only quotes against USD.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import uuid
@@ -125,6 +126,7 @@ class AlpacaBroker:
         limit_price: float | None = None,
         agent_id: str = "system",
         strategy: str = "manual",
+        cycle_id: str | None = None,
     ) -> Order:
         order_id = str(uuid.uuid4())[:8]
         created_at = datetime.now(UTC)
@@ -179,7 +181,7 @@ class AlpacaBroker:
                 filled_at=filled_at, agent_id=agent_id, strategy=strategy,
                 exchange_id="alpaca", live=True,
             )
-            await _emit_trade_audit(order, filled_price or 0.0)
+            await _emit_trade_audit(order, filled_price or 0.0, cycle_id=cycle_id)
             logger.info(
                 "alpaca_order_submitted",
                 order_id=order_id, alpaca_order_id=getattr(result, "id", None),
@@ -221,6 +223,65 @@ class AlpacaBroker:
         except Exception as exc:  # noqa: BLE001
             logger.error("alpaca_account_failed", error=str(exc))
             return {}
+
+    # ------------------------------------------------------------------
+    # Flatten — kill switch (Week 1 / A2)
+    # ------------------------------------------------------------------
+    async def flatten_all(self, per_position_timeout_s: float = 30.0) -> int:
+        """Close every open Alpaca position. Returns count closed.
+
+        Per-position timeout so a single hung close doesn't block the kill
+        switch from making progress on the rest. Crypto uses GTC, equities
+        DAY (matches submit_order's TimeInForce policy).
+
+        Partial failures are LOGGED, not raised — the kill switch's job is to
+        flatten as much as possible; the operator handles stragglers.
+        """
+        client = self._get_client()
+        if client is None:
+            logger.error("alpaca_flatten_client_unavailable")
+            return 0
+
+        try:
+            positions = await _to_thread(client.get_all_positions)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("alpaca_flatten_positions_failed", error=str(exc))
+            return 0
+
+        if not positions:
+            logger.info("alpaca_flatten_noop", reason="no open positions")
+            return 0
+
+        logger.critical(
+            "alpaca_flatten_starting", count=len(positions), paper=self.paper
+        )
+
+        closed = 0
+        for pos in positions:
+            symbol = getattr(pos, "symbol", "")
+            try:
+                await asyncio.wait_for(
+                    _to_thread(client.close_position, symbol),
+                    timeout=per_position_timeout_s,
+                )
+                closed += 1
+                logger.warning(
+                    "alpaca_position_closed",
+                    symbol=symbol, paper=self.paper,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "alpaca_position_close_timeout",
+                    symbol=symbol,
+                    timeout_s=per_position_timeout_s,
+                    msg="operator must close manually",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "alpaca_position_close_failed",
+                    symbol=symbol, error=str(exc),
+                )
+        return closed
 
     async def get_orders(self, limit: int = 100, status: str = "all") -> list[dict]:
         """Return recent Alpaca orders as plain dicts ready for the MC feed."""
@@ -355,15 +416,18 @@ def _rejected(
     )
 
 
-async def _emit_trade_audit(order: Order, filled_price: float) -> None:
+async def _emit_trade_audit(
+    order: Order, filled_price: float, cycle_id: str | None = None
+) -> None:
     redis = get_redis()
     await produce(topology.TRADES, {
         "order_id": order.order_id, "symbol": order.symbol, "side": order.side,
         "quantity": str(order.quantity), "filled_price": str(filled_price),
         "agent_id": order.agent_id, "strategy": order.strategy,
         "exchange": "alpaca", "live": "true",
+        "cycle_id": cycle_id or "",
     }, redis=redis)
     await produce_audit("live_trade_executed", order.agent_id, {
         "order_id": order.order_id, "symbol": order.symbol, "side": order.side,
         "quantity": order.quantity, "price": filled_price, "exchange": "alpaca",
-    }, redis=redis)
+    }, redis=redis, cycle_id=cycle_id)

@@ -41,3 +41,19 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Stray operator files — never commit
+28a469e6*.txt
+commit_msg.txt
+create_shortcuts.vbs
+desktop_path.tmp
+Digitial*Ocean*.txt*
+*.pub
+.playwright-mcp/
+.claude/worktrees/
+.claude/_external_plan_review/
+.claude/_handoff_design/
+.claude/settings.local.json
+dashboard-*.png
+mc-v*.png
+evidence/

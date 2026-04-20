@@ -14,9 +14,22 @@ from src.core.redis import get_redis
 logger = structlog.get_logger()
 
 
+_PROMPT_SKELETON = (
+    "You are Rex, a sentiment analyst.\n"
+    "Symbol/prior-signal context varies per cycle.\n"
+    "Output schema: direction, confidence, thesis, sentiment_score."
+)
+
+
 class RexAgent(BaseAgent):
     def __init__(self) -> None:
-        super().__init__("rex", "Rex", "Sentiment Analyst")
+        super().__init__(
+            "rex",
+            "Rex",
+            "Sentiment Analyst",
+            model_name="claude-haiku-4-5-20251001",
+            prompt_template=_PROMPT_SKELETON,
+        )
         self._client = make_tracked_client(api_key=settings.anthropic_api_key)
 
     async def analyze(self, state: AgentState) -> AgentState:

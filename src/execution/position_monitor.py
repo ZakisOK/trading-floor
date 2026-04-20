@@ -13,6 +13,11 @@ from datetime import datetime, UTC
 import structlog
 
 from src.execution.broker import paper_broker
+from src.execution.position_source import (
+    BrokerUnavailableError,
+    position_flattener,
+    position_provider,
+)
 from src.core.security import is_kill_switch_active
 from src.core.redis import get_redis
 from src.streams.producer import produce, produce_audit
@@ -66,10 +71,20 @@ async def _check_position(pos: dict, current_price: float) -> str | None:
 
 
 async def _exit_position(pos: dict, current_price: float, reason: str) -> None:
-    """Execute a market SELL to close the position, then emit audit + PnL."""
+    """Execute a market SELL to close the position, then emit audit + PnL.
+
+    Week 2 / B4: every exit (stop, target, trailing_stop, kill_switch, manual)
+    publishes a structured event to ``stream:trade_outcomes`` carrying enough
+    detail (entry/exit price/ts, qty, pnl, reason, trade_id) for the outcome
+    writer to populate ``trade_outcomes``. This closes the gap where only a
+    subset of exit reasons used to surface in P&L reporting.
+    """
     symbol = pos["symbol"]
     quantity = pos["quantity"]
     avg_price = pos["avg_price"]
+    entry_ts = pos.get("entry_time") or datetime.now(UTC).isoformat()
+    trade_id = pos.get("trade_id") or ""
+    cycle_id = pos.get("cycle_id") or ""
     redis = get_redis()
 
     logger.warning(
@@ -85,10 +100,12 @@ async def _exit_position(pos: dict, current_price: float, reason: str) -> None:
         current_price=current_price,
         agent_id="position_monitor",
         strategy=f"auto_exit:{reason}",
+        cycle_id=cycle_id or None,
     )
 
     pnl = (current_price - avg_price) * quantity
     pnl_pct = (current_price - avg_price) / avg_price if avg_price else 0.0
+    exit_ts = datetime.now(UTC).isoformat()
 
     await produce(topology.PNL, {
         "symbol": symbol, "reason": reason,
@@ -97,10 +114,40 @@ async def _exit_position(pos: dict, current_price: float, reason: str) -> None:
         "order_id": order.order_id,
     }, redis=redis)
 
+    # Week 2 / B4 — structured outcome event keyed on trade_id.
+    if trade_id:
+        await produce(topology.TRADE_OUTCOMES, {
+            "trade_id": trade_id,
+            "cycle_id": cycle_id,
+            "symbol": symbol,
+            "venue": "sim",
+            "direction": "LONG",  # paper_broker is long-only currently
+            "entry_ts": entry_ts,
+            "exit_ts": exit_ts,
+            "entry_price": str(avg_price),
+            "exit_price": str(current_price),
+            "quantity": str(quantity),
+            "pnl_usd": str(round(pnl, 8)),
+            "pnl_pct": str(round(pnl_pct, 6)),
+            "exit_reason": reason,
+            "regime_at_entry": pos.get("regime_at_entry") or "stub-v1:UNKNOWN",
+            "regime_at_exit": pos.get("regime_at_entry") or "stub-v1:UNKNOWN",
+        }, redis=redis)
+    else:
+        # No trade_id means this position predates Week 2 instrumentation.
+        # We still write to PNL (above) for dashboards but skip the outcome
+        # event — the outcome writer would have nothing to attribute against.
+        logger.info(
+            "exit_without_trade_id",
+            symbol=symbol, reason=reason,
+            msg="position predates Week 2 instrumentation; outcome event skipped",
+        )
+
     await produce_audit("position_exit", "position_monitor", {
         "symbol": symbol, "reason": reason,
         "pnl": round(pnl, 6), "order_id": order.order_id,
-    }, redis=redis)
+        "trade_id": trade_id,
+    }, redis=redis, cycle_id=cycle_id or None)
 
     # Update ELO for agents that contributed to the directional call
     await _update_agent_elos(symbol, pnl_pct, redis)
@@ -163,18 +210,54 @@ async def _process_position(pos: dict) -> None:
 
 
 async def _flatten_all_for_kill_switch() -> None:
-    """Close every open position immediately — kill switch is active."""
-    positions = await paper_broker.get_positions()
+    """Close every open position immediately — kill switch is active.
+
+    Week 1 / A2: dispatches via VenueAwareFlattener. For ``sim`` we keep the
+    old per-position exit path so trailing stops, audit trail, and ELO updates
+    still fire. For ``alpaca_paper`` / ``live`` we hand off to AlpacaBroker's
+    flatten_all (close_position per symbol) and let the next risk_monitor
+    sweep reconcile the book — Alpaca closes don't have analyst contributors
+    to update.
+    """
+    try:
+        positions = await position_provider.get_positions()
+    except BrokerUnavailableError as exc:
+        logger.critical(
+            "kill_switch_flatten_failed_broker_unavailable",
+            error=str(exc),
+            msg="operator must close positions manually at the venue",
+        )
+        return
+
     if not positions:
         return
+
     logger.critical("kill_switch_flattening_all", count=len(positions))
-    tasks = []
-    for pos in positions:
-        price = await _fetch_live_price(pos["symbol"])
-        if price:
-            tasks.append(_exit_position(pos, price, "kill_switch"))
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Dispatch via the venue-aware flattener. For sim, also fire the per-
+    # position exit path so audit + ELO + signed P&L records still land.
+    from src.execution.broker import get_execution_venue
+
+    venue = await get_execution_venue()
+    if venue == "sim":
+        tasks = []
+        for pos in positions:
+            price = await _fetch_live_price(pos["symbol"])
+            if price:
+                tasks.append(_exit_position(pos, price, "kill_switch"))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        return
+
+    # Alpaca venues — use SDK close_position via the flattener.
+    try:
+        await position_flattener.flatten_all()
+    except BrokerUnavailableError as exc:
+        logger.critical(
+            "kill_switch_flatten_alpaca_unavailable",
+            error=str(exc),
+            msg="operator must close Alpaca positions manually",
+        )
 
 
 async def run() -> None:

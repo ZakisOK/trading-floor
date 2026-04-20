@@ -1,21 +1,37 @@
-"""BaseAgent — full implementation with Redis stream integration, skill library,
-and firm-memory hooks.
+"""BaseAgent — Week 1 instrumentation:
 
-The skill and memory helpers degrade gracefully — if the Graphiti service is
-down or the skills directory is unreadable, the agent still runs. Recall
-returns an empty list and remember is a no-op in those failure modes.
+- ``cycle_id``, ``cycle_started_at``, ``subsystem``, ``regime_fingerprint`` are
+  now part of every AgentState. The supervisor (sage.run_trading_cycle) is
+  responsible for stamping them at cycle entry.
+- Every agent computes ``self.agent_version`` at init from
+  ``(git_sha, model_name, prompt_template)``. Format is enforced by
+  ``compute_agent_version`` AND by the agent_episodes CHECK constraint.
+- ``analyze_with_heartbeat`` now wraps ``analyze`` with episode emission:
+  every successful or failed agent invocation produces one row in
+  ``stream:episodes`` (Redis), which the EpisodeWriter consumer drains into
+  Postgres.
+
+Episode emission is fire-and-forget. Redis outage does not fail a cycle —
+we log a warning and continue. This is consistent with PRINCIPLES #11
+(immutability is structural) and the spec's stated trade-off "episode loss
+is preferable to cycle loss, but must be alerted".
 """
 from __future__ import annotations
 
+import json
+import time
 from abc import ABC, abstractmethod
-from datetime import datetime, UTC
+from datetime import datetime
 from typing import Any, TypedDict
 
 import structlog
+from uuid6 import uuid7
 
+from src.core.cycle import utcnow
 from src.core.redis import get_redis
-from src.streams.producer import produce, produce_audit
+from src.core.versioning import compute_agent_version
 from src.streams import topology
+from src.streams.producer import produce, produce_audit
 
 # Skill loader is optional; stripped environments may not have the skills dir.
 try:  # pragma: no cover - tested via fallback path
@@ -41,7 +57,36 @@ except ImportError:  # pragma: no cover
 logger = structlog.get_logger()
 
 
-class AgentState(TypedDict):
+# Redis flag that lets ops disable episode emission without redeploying.
+# Default-on; set to "false" in Redis to mute the producer (the consumer keeps
+# draining whatever is already on the stream).
+EPISODE_EMISSION_FLAG = "feature:episode_pipeline_enabled"
+
+
+class AgentState(TypedDict, total=False):
+    """Cycle-shared state passed through the trading graph.
+
+    Week 1 added: ``cycle_id``, ``cycle_started_at``, ``subsystem``,
+    ``regime_fingerprint``. Week 2 added: ``sized_order``,
+    ``portfolio_construction_reasoning``. Pre-existing fields kept for
+    backwards compat.
+
+    Marked ``total=False`` because LangGraph nodes mutate partial state.
+    LangGraph's StateGraph only propagates keys declared here between
+    nodes — if you add a new field, declare it here.
+    """
+
+    # Week 1 cycle identity
+    cycle_id: str
+    cycle_started_at: datetime
+    subsystem: str
+    regime_fingerprint: str
+
+    # Week 2 portfolio construction
+    sized_order: dict | None
+    portfolio_construction_reasoning: str
+
+    # Pre-existing
     agent_id: str
     agent_name: str
     messages: list[dict]
@@ -53,15 +98,54 @@ class AgentState(TypedDict):
     reasoning: str
 
 
+def _redact_for_episode(state: AgentState | dict) -> dict:
+    """Strip fields that would balloon the episode row.
+
+    ``messages`` history is unbounded; we keep length only. ``market_data`` is
+    snapshot separately so we don't double-store it.
+    """
+    safe = {}
+    for k, v in dict(state).items():
+        if k == "messages":
+            safe[k + "_count"] = len(v) if isinstance(v, list) else 0
+        elif k == "market_data":
+            continue
+        else:
+            safe[k] = v
+    return safe
+
+
 class BaseAgent(ABC):
     """All Trading Floor agents extend this class."""
 
     name: str = "base"
 
-    def __init__(self, agent_id: str, name: str, role: str) -> None:
+    def __init__(
+        self,
+        agent_id: str,
+        name: str,
+        role: str,
+        *,
+        model_name: str = "unknown",
+        prompt_template: str | None = None,
+        subsystem: str = "legacy",
+    ) -> None:
         self.agent_id = agent_id
         self.name = name
         self.role = role
+        self.subsystem = subsystem
+        self.model_name = model_name
+        self.prompt_template = prompt_template if prompt_template is not None else f"role:{role}"
+        self.agent_version = compute_agent_version(self.model_name, self.prompt_template)
+        if model_name == "unknown" or prompt_template is None:
+            # Loud-but-non-fatal so we can iteratively upgrade each subclass
+            # in follow-up commits. The version is still well-formed and
+            # unique-per-process; it's just uninformative.
+            logger.warning(
+                "agent_version_default_inputs",
+                agent_id=agent_id,
+                hint="pass model_name= and prompt_template= to super().__init__",
+            )
         self._skill_loader = get_skill_loader() if _SKILLS_AVAILABLE and get_skill_loader else None
 
     # ------------------------------------------------------------------ skills
@@ -149,6 +233,7 @@ class BaseAgent(ABC):
         entry: float | None = None,
         stop: float | None = None,
         target: float | None = None,
+        cycle_id: str | None = None,
     ) -> None:
         redis = get_redis()
         await produce(topology.SIGNALS_RAW, {
@@ -162,12 +247,15 @@ class BaseAgent(ABC):
             "entry_price": str(entry) if entry else "",
             "stop_loss": str(stop) if stop else "",
             "take_profit": str(target) if target else "",
+            "cycle_id": cycle_id or "",
         }, redis=redis)
         await produce_audit("signal_emitted", self.agent_id, {
             "symbol": symbol, "direction": direction, "confidence": confidence,
+            "cycle_id": cycle_id,
         }, redis=redis)
         logger.info("signal_emitted", agent=self.name, symbol=symbol,
-                    direction=direction, confidence=confidence)
+                    direction=direction, confidence=confidence,
+                    cycle_id=cycle_id)
 
     async def heartbeat(
         self, status: str = "active", current_task: str | None = None
@@ -180,7 +268,7 @@ class BaseAgent(ABC):
         redis = get_redis()
         mapping: dict[str, str] = {
             "status": status,
-            "last_heartbeat": datetime.now(UTC).isoformat(),
+            "last_heartbeat": utcnow().isoformat(),
         }
         if current_task is not None:
             mapping["current_task"] = current_task
@@ -188,15 +276,117 @@ class BaseAgent(ABC):
         if status == "idle":
             await redis.hdel(f"agent:state:{self.agent_id}", "current_task")
 
+    async def _episode_emission_enabled(self) -> bool:
+        """Read the kill-switch-style feature flag from Redis. Default-on."""
+        try:
+            redis = get_redis()
+            raw = await redis.get(EPISODE_EMISSION_FLAG)
+            if raw is None:
+                return True
+            return str(raw).lower() not in ("false", "0", "off", "disabled")
+        except Exception:  # noqa: BLE001 - never block a cycle on flag read
+            return True
+
+    async def _emit_episode(
+        self,
+        *,
+        state: AgentState,
+        updated_state: AgentState | None,
+        latency_ms: int,
+        error: str | None,
+    ) -> None:
+        """Fire-and-forget episode write to ``stream:episodes``.
+
+        Keeps the trading path resilient: any failure here is logged and
+        swallowed. The consumer is responsible for everything past Redis.
+        """
+        if not await self._episode_emission_enabled():
+            return
+
+        cycle_id = state.get("cycle_id")
+        if not cycle_id:
+            # Spec PRINCIPLE #6: "A cycle without a cycle_id is a bug." We log
+            # loudly so the bug surfaces, but we don't raise here — raising
+            # would convert a missed-instrumentation into a production outage.
+            logger.error(
+                "episode_missing_cycle_id",
+                agent=self.agent_id,
+                hint="run_trading_cycle must stamp cycle_id before agent dispatch",
+            )
+            return
+
+        market = state.get("market_data") or {}
+        symbol = (
+            market.get("symbol", "UNKNOWN")
+            if isinstance(market, dict) else "UNKNOWN"
+        )
+
+        payload = {
+            "episode_id": str(uuid7()),
+            "ts": utcnow().isoformat(),
+            "cycle_id": cycle_id,
+            "cycle_started_at": (
+                state.get("cycle_started_at").isoformat()
+                if isinstance(state.get("cycle_started_at"), datetime)
+                else str(state.get("cycle_started_at") or utcnow().isoformat())
+            ),
+            "subsystem": state.get("subsystem") or self.subsystem or "legacy",
+            "symbol": symbol,
+            "agent_id": self.agent_id,
+            "agent_version": self.agent_version,
+            "market_snapshot": json.dumps(market) if market else "{}",
+            "input_state": json.dumps(_redact_for_episode(state), default=str),
+            "parsed_signal": json.dumps(
+                (updated_state or {}).get("signals") or [], default=str
+            ),
+            "reasoning": (updated_state or {}).get("reasoning", "") or "",
+            "latency_ms": str(latency_ms),
+            "error": error or "",
+            "regime_fingerprint": state.get("regime_fingerprint") or "stub-v1:UNKNOWN",
+        }
+
+        try:
+            redis = get_redis()
+            await produce(topology.EPISODES, payload, redis=redis)
+        except Exception as exc:  # noqa: BLE001 - never block a cycle on episode emit
+            logger.warning(
+                "episode_emit_failed",
+                agent=self.agent_id,
+                cycle_id=cycle_id,
+                error=str(exc),
+            )
+
     async def analyze_with_heartbeat(self, state: AgentState) -> AgentState:
-        """Wrap analyze() with Redis heartbeat updates so /api/agents shows live status."""
+        """Wrap analyze() with heartbeat updates AND episode emission.
+
+        Every invocation produces exactly one episode (success or failure).
+        The heartbeat semantics MC depends on (active → idle around analyze)
+        are preserved.
+        """
         market = state.get("market_data") or {}
         symbol = market.get("symbol", "") if isinstance(market, dict) else ""
+        started = time.monotonic()
+        updated_state: AgentState | None = None
+        error_str: str | None = None
         try:
             await self.heartbeat(status="active", current_task=symbol or None)
-            return await self.analyze(state)
+            updated_state = await self.analyze(state)
+            return updated_state
+        except Exception as exc:
+            error_str = f"{type(exc).__name__}: {exc}"
+            raise
         finally:
-            await self.heartbeat(status="idle", current_task=None)
+            latency_ms = int((time.monotonic() - started) * 1000)
+            try:
+                await self._emit_episode(
+                    state=state,
+                    updated_state=updated_state,
+                    latency_ms=latency_ms,
+                    error=error_str,
+                )
+            finally:
+                # heartbeat MUST run last, regardless of episode emit outcome
+                await self.heartbeat(status="idle", current_task=None)
 
     async def run(self, state: dict[str, Any]) -> dict[str, Any]:
         """Legacy run interface — delegates to analyze."""

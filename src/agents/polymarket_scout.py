@@ -16,9 +16,23 @@ import structlog
 logger = structlog.get_logger()
 
 
+_PROMPT_SKELETON = (
+    "Polymarket scout — deterministic conviction adjuster. "
+    "Filters relevant Polymarket signals, applies bounded conviction boost "
+    "(±20%) to existing signals based on YES probability and relevance. "
+    "Output: signals[].confidence adjusted in place, polymarket_context."
+)
+
+
 class PolymarketScoutAgent(BaseAgent):
     def __init__(self):
-        super().__init__("polymarket_scout", "Polymarket Scout", "Prediction Market Analyst")
+        super().__init__(
+            "polymarket_scout",
+            "Polymarket Scout",
+            "Prediction Market Analyst",
+            model_name="deterministic",
+            prompt_template=_PROMPT_SKELETON,
+        )
         self._client = make_tracked_client(api_key=settings.anthropic_api_key)
         self._feed = PolymarketFeed()
 

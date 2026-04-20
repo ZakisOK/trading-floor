@@ -1,10 +1,11 @@
-version: "3.9"
-
 services:
   postgres:
     image: timescale/timescaledb:latest-pg16
+    # Loopback-only. Do NOT expose Postgres to the public internet.
+    # Host port 55432 dodges Windows/Hyper-V reservations on 5432; inside the
+    # compose network postgres still listens on 5432.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:55432:5432"
     environment:
       POSTGRES_DB: tradingfloor
       POSTGRES_USER: tradingfloor
@@ -19,22 +20,30 @@ services:
 
   questdb:
     image: questdb/questdb:latest
+    # Loopback-only. QuestDB web console + ILP + Postgres wire should never be public.
     ports:
-      - "9000:9000"
-      - "9009:9009"
-      - "8812:8812"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9009:9009"
+      - "127.0.0.1:8812:8812"
     volumes:
       - questdata:/root/.questdb
 
   redis:
     image: redis:7-alpine
+    # Bind to loopback only. Docker bypasses UFW; exposing 6379 on 0.0.0.0
+    # publishes Redis to the internet on any host with a public IP.
+    # Host port 56379 dodges Memurai / local Redis services on Windows;
+    # inside the compose network redis still listens on 6379.
     ports:
-      - "6379:6379"
-    command: redis-server --appendonly yes
+      - "127.0.0.1:56379:6379"
+    command: >
+      redis-server --appendonly yes
+      --protected-mode yes
+      --requirepass ${REDIS_PASSWORD:-change_me_local_only}
     volumes:
       - redisdata:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-change_me_local_only}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -48,7 +57,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-change_me_local_only}@redis:6379/0
       - DATABASE_URL=postgresql+asyncpg://tradingfloor:tradingfloor_dev@postgres:5432/tradingfloor
     env_file:
       - .env
@@ -61,12 +70,150 @@ services:
       redis:
         condition: service_healthy
     environment:
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-change_me_local_only}@redis:6379/0
     env_file:
       - .env
+    restart: unless-stopped
+
+  episode-writer:
+    # Week 1 / B4 — drains stream:episodes into agent_episodes (Timescale).
+    build: .
+    command: python scripts/run_episode_writer.py
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-change_me_local_only}@redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://tradingfloor:tradingfloor_dev@postgres:5432/tradingfloor
+    env_file:
+      - .env
+    restart: unless-stopped
+
+  outcome-writer:
+    # Week 2 / B2 — drains stream:trade_outcomes into trade_outcomes +
+    # agent_contributions. Joins agent_version from agent_episodes.
+    build: .
+    command: python scripts/run_outcome_writer.py
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-change_me_local_only}@redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://tradingfloor:tradingfloor_dev@postgres:5432/tradingfloor
+    env_file:
+      - .env
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5.20-community
+    # Loopback-only — Neo4j has had historic RCE issues when exposed.
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-change_me_local_only}
+    volumes:
+      - neo4jdata:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - cypher-shell -u neo4j -p $${NEO4J_PASSWORD:-change_me_local_only} 'RETURN 1'
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    restart: unless-stopped
+
+  graphiti:
+    # Official Graphiti image. If zepai/graphiti:latest is not yet published
+    # on the registry, pin to the upstream getzep/graphiti image instead and
+    # track https://github.com/getzep/graphiti for releases.
+    image: zepai/graphiti:latest
+    # Loopback-only.
+    ports:
+      - "127.0.0.1:8100:8000"
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-change_me_local_only}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    restart: unless-stopped
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    # Loopback-only. Phoenix UI exposes traces that leak prompts / keys.
+    ports:
+      - "127.0.0.1:6006:6006"
+      - "127.0.0.1:4317:4317"
+    volumes:
+      - phoenixdata:/mnt/data
+    restart: unless-stopped
+
+  api:
+    build: .
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-change_me_local_only}@redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://tradingfloor:tradingfloor_dev@postgres:5432/tradingfloor
+    env_file:
+      - .env
+    restart: unless-stopped
+
+  agents:
+    build: .
+    command: python -m src.schedulers.cycle_runner
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+    environment:
+      # REDIS_URL and DATABASE_URL must be overridden per-service so containers
+      # can reach "redis" / "postgres" hostnames on the docker network (the
+      # .env REDIS_URL uses "localhost" for host-side scripts). Everything
+      # else — including ANTHROPIC_API_KEY — flows through env_file so
+      # edits to .env take effect on `docker compose up -d --force-recreate`.
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-change_me_local_only}@redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://tradingfloor:tradingfloor_dev@postgres:5432/tradingfloor
+    env_file:
+      - .env
+    restart: unless-stopped
+
+  frontend:
+    # If frontend/Dockerfile does not exist yet, create one in a follow-up
+    # (node:20-alpine base, npm ci, npm run build, npm run start on 3000).
+    build: ./frontend
+    command: npm run start
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    environment:
+      # NEXT_PUBLIC_* is baked into the client bundle at build time and runs
+      # in the USER'S browser, not inside the docker network. It must point
+      # at the host-reachable address (localhost:8000, which the api service
+      # publishes). "http://api:8000" only works for server-side fetches.
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
     restart: unless-stopped
 
 volumes:
   pgdata:
   questdata:
   redisdata:
+  neo4jdata:
+  phoenixdata:

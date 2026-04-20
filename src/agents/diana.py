@@ -10,9 +10,22 @@ logger = structlog.get_logger()
 CONFIDENCE_THRESHOLD = 0.5
 
 
+_PROMPT_SKELETON = (
+    "Diana — deterministic risk gate.\n"
+    f"CONFIDENCE_THRESHOLD={CONFIDENCE_THRESHOLD}; consensus_pct>=0.5.\n"
+    "Inputs: signals[]. Output: risk_approved, final_decision, reasoning."
+)
+
+
 class DianaAgent(BaseAgent):
     def __init__(self) -> None:
-        super().__init__("diana", "Diana", "Risk Manager")
+        super().__init__(
+            "diana",
+            "Diana",
+            "Risk Manager",
+            model_name="deterministic",
+            prompt_template=_PROMPT_SKELETON,
+        )
 
     async def analyze(self, state: AgentState) -> AgentState:
         signals = state.get("signals", [])

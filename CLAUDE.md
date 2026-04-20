@@ -118,3 +118,13 @@ Bear   — Bear Researcher
 Sage   — Portfolio Manager (LangGraph supervisor)
 Scout  — Opportunities Agent
 ```
+
+## Alpaca MCP + Memory Architecture (Phase 1)
+
+**Alpaca MCP server** is configured in `.mcp.json` via `uvx alpaca-mcp-server` and is intended for Claude Code interactive sessions only — exploring positions, inspecting account state, fetching market data while developing. Production agents (Atlas in particular) use the `alpaca-py` SDK directly from Python. The MCP surface is intentionally narrowed via `ALPACA_TOOLSETS` to read-only toolsets: account, positions, stock_data, crypto_data, options_data, watchlists, assets, news. Order placement, cancellation, replacement, and position closing tools are additionally hard-denied in `.claude/settings.local.json` so Claude Code cannot execute a trade even if a prompt tried to coax it.
+
+**Default paper mode.** `ALPACA_PAPER_TRADE=true` is set in `.env.example` and forced inside `.mcp.json`. To flip the MCP server to live trading, set `ALPACA_PAPER_TRADE=false` in your shell before launching Claude Code — this should almost never happen. Live trading goes through the Python execution path with full risk checks and Diana approval, never through a chat tool call.
+
+**Graphiti + Zep CE** is the shared temporal memory layer for agents. Every agent reads and writes to the same Graphiti instance (Neo4j-backed) so beliefs, observations, and debate outcomes persist across cycles. `GRAPHITI_URL` and the Neo4j credentials are wired through `src/core/config.py`.
+
+**Phoenix** (Arize) is observability. It receives OTLP traces for every LLM call, tool invocation, and agent step — `PHOENIX_COLLECTOR_ENDPOINT` points agents at it. Use the UI on port 6006 to debug reasoning chains.

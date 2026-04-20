@@ -32,9 +32,7 @@ import structlog
 from src.streams.producer import produce, produce_audit
 from src.streams import topology
 from src.core.redis import get_redis
-from src.execution.position_sizer import VolatilityPositionSizer
 
-_sizer = VolatilityPositionSizer()
 logger = structlog.get_logger()
 
 # Redis keys for paper-trading state shared across processes
@@ -346,8 +344,15 @@ class PaperBroker:
         stop_loss: float | None = None,
         take_profit: float | None = None,
         exchange_id: str = "binance",
+        cycle_id: str | None = None,
     ) -> Order:
-        """Route the order based on execution_venue + symbol type."""
+        """Route the order based on execution_venue + symbol type.
+
+        ``cycle_id`` is propagated into stream:trades and stream:audit so the
+        episode/outcome join in Week 2 can attribute trades back to the
+        cycle that produced them. Background sweeps (position_monitor exits,
+        manual flatten) pass ``cycle_id=None`` — that is correct.
+        """
         from src.execution.alpaca_broker import (
             is_alpaca_crypto_symbol,
             is_alpaca_equity_symbol,
@@ -366,6 +371,7 @@ class PaperBroker:
             return await self._paper_fill(
                 symbol, side, quantity, current_price,
                 agent_id, strategy, stop_loss, take_profit,
+                cycle_id=cycle_id,
             )
 
         # Polymarket uses its own HTTP client — sim-only here.
@@ -373,6 +379,7 @@ class PaperBroker:
             return await self._paper_fill(
                 symbol, side, quantity, current_price,
                 agent_id, strategy, stop_loss, take_profit,
+                cycle_id=cycle_id,
             )
 
         # sim venue → local simulation for everything
@@ -380,6 +387,7 @@ class PaperBroker:
             return await self._paper_fill(
                 symbol, side, quantity, current_price,
                 agent_id, strategy, stop_loss, take_profit,
+                cycle_id=cycle_id,
             )
 
         # alpaca_paper or live: route through AlpacaBroker for equities and
@@ -392,40 +400,59 @@ class PaperBroker:
         if routes_alpaca:
             alpaca_paper = venue != "live"
             alpaca = get_alpaca_broker(paper=alpaca_paper)
-            if alpaca is not None:
-                order = await alpaca.submit_order(
-                    symbol=symbol, side=side, quantity=quantity,
-                    order_type="market", limit_price=None,
-                    agent_id=agent_id, strategy=strategy,
+            if alpaca is None:
+                # PRINCIPLE #3: no silent fallback. If Alpaca was supposed to
+                # take this order, sim is NOT a valid substitute — operators
+                # would see "fills" that aren't real. Trip the kill switch and
+                # raise; the caller (Atlas) surfaces this to the operator.
+                from src.core.security import activate_kill_switch
+                from src.execution.position_source import BrokerUnavailableError
+
+                await activate_kill_switch(
+                    reason=f"alpaca_unavailable (venue={venue}, symbol={symbol})",
+                    operator_id="broker_router",
                 )
-                await self._push_order(order)
-                return order
-            logger.warning(
-                "alpaca_broker_unavailable_fallback_sim",
-                symbol=symbol, exchange=exchange_id, venue=venue,
+                raise BrokerUnavailableError(
+                    f"Alpaca required for venue={venue} symbol={symbol}, "
+                    f"unavailable — kill switch tripped"
+                )
+            order = await alpaca.submit_order(
+                symbol=symbol, side=side, quantity=quantity,
+                order_type="market", limit_price=None,
+                agent_id=agent_id, strategy=strategy,
+                cycle_id=cycle_id,
             )
-            return await self._paper_fill(
-                symbol, side, quantity, current_price,
-                agent_id, strategy, stop_loss, take_profit,
-            )
+            await self._push_order(order)
+            return order
 
         # live venue + non-Alpaca crypto → ccxt (binance/coinbase/kraken)
         if venue == "live":
             exchange = await _get_live_exchange(exchange_id)
-            if exchange is not None:
-                return await self._live_fill(
-                    exchange, symbol, side, quantity, agent_id, strategy, exchange_id,
+            if exchange is None:
+                from src.core.security import activate_kill_switch
+                from src.execution.position_source import BrokerUnavailableError
+
+                await activate_kill_switch(
+                    reason=f"live_exchange_unavailable (exchange={exchange_id}, symbol={symbol})",
+                    operator_id="broker_router",
                 )
-            logger.warning(
-                "live_exchange_unavailable_fallback_sim",
-                exchange=exchange_id, symbol=symbol,
+                raise BrokerUnavailableError(
+                    f"Live exchange {exchange_id!r} required for symbol={symbol}, "
+                    f"unavailable — kill switch tripped"
+                )
+            return await self._live_fill(
+                exchange, symbol, side, quantity, agent_id, strategy, exchange_id,
+                cycle_id=cycle_id,
             )
 
         # alpaca_paper + non-Alpaca crypto pair → still simulate locally.
-        # Don't silently flip to live ccxt from a "paper" venue.
+        # Don't silently flip to live ccxt from a "paper" venue. This is a
+        # legitimate use of sim (the symbol simply has no real venue here),
+        # not a fallback.
         return await self._paper_fill(
             symbol, side, quantity, current_price,
             agent_id, strategy, stop_loss, take_profit,
+            cycle_id=cycle_id,
         )
 
 
@@ -438,6 +465,7 @@ class PaperBroker:
         agent_id: str,
         strategy: str,
         exchange_id: str,
+        cycle_id: str | None = None,
     ) -> Order:
         """Submit a real market order via ccxt and return an Order record."""
         order_id = str(uuid.uuid4())[:8]
@@ -476,11 +504,12 @@ class PaperBroker:
             "quantity": str(quantity), "filled_price": str(filled_price),
             "agent_id": agent_id, "strategy": strategy,
             "exchange": exchange_id, "live": "true",
+            "cycle_id": cycle_id or "",
         }, redis=redis)
         await produce_audit("live_trade_executed", agent_id, {
             "order_id": order_id, "symbol": symbol, "side": side,
             "quantity": quantity, "price": filled_price, "exchange": exchange_id,
-        }, redis=redis)
+        }, redis=redis, cycle_id=cycle_id)
         return order
 
 
@@ -494,18 +523,32 @@ class PaperBroker:
         strategy: str,
         stop_loss: float | None = None,
         take_profit: float | None = None,
+        cycle_id: str | None = None,
     ) -> Order:
-        """Simulate fill with slippage and commission. State persists to Redis."""
+        """Simulate fill with slippage and commission. State persists to Redis.
+
+        Week 1 / A4: sizing happens upstream (in Atlas, then Week 2's
+        PortfolioConstructor). The broker no longer sizes — it executes the
+        quantity it was given. ``quantity == 0`` is now a bug, not a pattern,
+        so we reject it explicitly so the bug surfaces.
+        """
         order_id = str(uuid.uuid4())[:8]
 
-        cash = await self.get_cash()
-        portfolio_value = await self.get_portfolio_value({symbol: current_price})
-        vol_quantity = await _sizer.calculate_size(
-            symbol, portfolio_value, {symbol: current_price}
-        )
-        if vol_quantity > 0:
-            quantity = vol_quantity
+        if quantity <= 0:
+            logger.error(
+                "paper_fill_zero_quantity",
+                symbol=symbol, side=side, agent=agent_id, strategy=strategy,
+                msg="sizer must run before broker dispatch (Week 1 / A4)",
+            )
+            return Order(
+                order_id=order_id, symbol=symbol, side=side, quantity=0.0,
+                order_type="MARKET", limit_price=None, status="REJECTED",
+                filled_price=None, created_at=datetime.now(UTC), filled_at=None,
+                agent_id=agent_id, strategy=strategy,
+                exchange_id="paper", live=False,
+            )
 
+        cash = await self.get_cash()
         slip = current_price * self.slippage_pct
         filled_price = current_price + slip if side == "BUY" else current_price - slip
         commission = filled_price * quantity * self.commission_pct
@@ -517,12 +560,18 @@ class PaperBroker:
                 commission = filled_price * quantity * self.commission_pct
                 cost = filled_price * quantity + commission
             await self._set_cash(cash - cost)
+            # Week 2 / B4 — stamp trade_id + cycle_id on the open position so
+            # the position_monitor's exit path can write a structured outcome
+            # event keyed on trade_id.
+            trade_id = str(uuid.uuid4())
             await self._set_position(symbol, {
                 "symbol": symbol, "quantity": quantity,
                 "avg_price": filled_price, "side": "LONG",
                 "entry_time": datetime.now(UTC).isoformat(),
                 "stop_loss": stop_loss, "take_profit": take_profit,
                 "trailing_stop": None,
+                "trade_id": trade_id,
+                "cycle_id": cycle_id or "",
             })
         else:
             proceeds = filled_price * quantity - commission
@@ -547,11 +596,12 @@ class PaperBroker:
             "order_id": order_id, "symbol": symbol, "side": side,
             "quantity": str(quantity), "filled_price": str(filled_price),
             "commission": str(commission), "agent_id": agent_id, "strategy": strategy,
+            "cycle_id": cycle_id or "",
         }, redis=redis)
         await produce_audit("trade_executed", agent_id, {
             "order_id": order_id, "symbol": symbol, "side": side,
             "quantity": quantity, "price": filled_price,
-        }, redis=redis)
+        }, redis=redis, cycle_id=cycle_id)
         logger.info("paper_order_filled", order_id=order_id, symbol=symbol,
                     side=side, price=filled_price, agent=agent_id,
                     quantity=round(quantity, 6))

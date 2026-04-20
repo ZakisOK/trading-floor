@@ -67,6 +67,33 @@ class Settings(BaseSettings):
     neo4j_user: str = "neo4j"
     neo4j_password: str = "change_me_local_only"
 
+    # Week 2 / A6 — per-mode caps. PortfolioConstructor reads this dict
+    # instead of using hardcoded literals. Source:
+    # trading-floor-plan/weeks/week-02-*.md A6 table. Operator changes
+    # autonomy_mode in Redis; constructor picks up the matching cap row.
+    autonomy_mode_limits: dict[str, dict[str, float]] = Field(
+        default_factory=lambda: {
+            "COMMANDER": {
+                "max_risk_per_trade": 0.02,
+                "max_daily_loss": 0.05,
+                "max_gross_exposure": 1.50,
+                "max_single_symbol": 0.10,
+            },
+            "TRUSTED": {
+                "max_risk_per_trade": 0.03,
+                "max_daily_loss": 0.07,
+                "max_gross_exposure": 2.00,
+                "max_single_symbol": 0.15,
+            },
+            "YOLO": {
+                "max_risk_per_trade": 0.05,
+                "max_daily_loss": 0.12,
+                "max_gross_exposure": 3.00,
+                "max_single_symbol": 0.20,
+            },
+        }
+    )
+
     @field_validator("allowed_origins", mode="before")
     @classmethod
     def _split_allowed_origins(cls, v: object) -> object:

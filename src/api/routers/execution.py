@@ -243,7 +243,10 @@ async def get_risk_metrics() -> dict:
             "open_positions": len(await paper_broker.get_positions()),
             "updated_at": None,
         }
-    return {k: (float(v) if k != "updated_at" and k != "open_positions" else v)
+    # Non-numeric fields are kept as strings (Week 1 / A1 added "venue" to
+    # the risk:metrics hash; without this whitelist, float("sim") crashes).
+    _string_fields = {"updated_at", "open_positions", "venue"}
+    return {k: (float(v) if k not in _string_fields else v)
             for k, v in raw.items()}
 
 
