@@ -14,9 +14,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className={`${GeistSans.variable} ${GeistMono.variable}`}>
       <body style={{ background: "var(--bg-void)", color: "var(--text-primary)", display: "flex", minHeight: "100vh" }}>
         <AppNav />
-        <main style={{ flex: 1, minWidth: 0, overflowY: "auto" }}>
+        {/* Content column — the active page is responsible for its own
+            layout (e.g. Mission Control uses main + right rail inside). */}
+        <div style={{ flex: 1, minWidth: 0, overflowY: "auto" }}>
           {children}
-        </main>
+        </div>
       </body>
     </html>
   );

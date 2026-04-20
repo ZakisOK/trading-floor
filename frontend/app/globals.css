@@ -95,6 +95,82 @@ body {
   background-size: 220px 220px;
 }
 
+/* ─── Left sidebar (AppNav) — ported from mock lines 93–162 ──────────── */
+aside.nav {
+  width: 224px; flex-shrink: 0; min-height: 100vh;
+  border-right: 1px solid var(--line-hair);
+  padding: 24px 0 16px;
+  background: linear-gradient(180deg, rgba(255,255,255,.012), transparent 30%);
+  display: flex; flex-direction: column; gap: 24px;
+  position: sticky; top: 0; height: 100vh;
+}
+.brand { padding: 0 20px 20px; border-bottom: 1px solid var(--line-hair); }
+.brand .mark { display: flex; align-items: center; gap: 10px; }
+.brand .logo {
+  width: 26px; height: 26px; border-radius: 7px; position: relative;
+  background: linear-gradient(135deg, #EEEFF1 0%, #A4ABB6 100%);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.14), 0 3px 10px rgba(0,0,0,.4);
+  flex-shrink: 0;
+}
+.brand .logo::after {
+  content: ""; position: absolute; inset: 6px; border-radius: 1px;
+  background: #0A0D13;
+  clip-path: polygon(0 70%, 20% 55%, 40% 65%, 60% 35%, 80% 50%, 100% 25%, 100% 100%, 0 100%);
+}
+.brand h1 {
+  font-family: var(--font-sans); font-weight: 500; font-size: 13.5px;
+  margin: 0; letter-spacing: -.016em; line-height: 1.2; color: var(--text-primary);
+}
+.brand .sub {
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: .2em;
+  color: var(--text-tertiary); text-transform: uppercase; margin-top: 3px;
+}
+.nav-group { display: flex; flex-direction: column; gap: 1px; padding: 0 12px; }
+.nav-group h6 {
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: .24em;
+  color: var(--text-muted); text-transform: uppercase;
+  margin: 0 0 8px; padding: 0 10px; font-weight: 500;
+}
+.nav-item {
+  display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 6px;
+  color: var(--text-secondary); font-size: 13px; cursor: pointer; letter-spacing: -.008em;
+  transition: background .15s, color .15s; position: relative;
+  text-decoration: none;
+}
+.nav-item svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.4; flex-shrink: 0; }
+.nav-item:hover { background: rgba(255,255,255,.025); color: var(--text-primary); }
+.nav-item.active { background: rgba(255,255,255,.04); color: var(--text-primary); }
+.nav-item.active::before {
+  content: ""; position: absolute; left: -12px; top: 9px; bottom: 9px;
+  width: 2px; background: var(--text-primary); border-radius: 0 2px 2px 0;
+}
+.nav-item .meta {
+  margin-left: auto; font-family: var(--font-mono); font-size: 10px; letter-spacing: -.01em;
+  color: var(--text-muted);
+}
+.nav-item .dot {
+  margin-left: auto; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--accent-profit); box-shadow: 0 0 6px var(--accent-profit);
+}
+.nav-item .badge {
+  margin-left: auto; padding: 1px 5px; border-radius: 3px;
+  font-family: var(--font-mono); font-size: 9px; font-weight: 600;
+  letter-spacing: .08em; text-transform: uppercase;
+  background: rgba(94,106,210,.15); color: var(--accent-primary);
+}
+.nav-foot {
+  margin-top: auto; padding: 14px 20px 0; border-top: 1px solid var(--line-hair);
+  font-family: var(--font-mono); font-size: 10px; color: var(--text-tertiary);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.nav-foot .row { display: flex; justify-content: space-between; align-items: center; }
+.nav-foot .sys { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); }
+.nav-foot .sys .pulse {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--accent-profit); box-shadow: 0 0 6px var(--accent-profit);
+  animation: pulse 2s infinite;
+}
+
 /* ─── Card base ──────────────────────────────────────────────────────── */
 .card {
   background: linear-gradient(180deg, rgba(255,255,255,.022), rgba(255,255,255,.006));
